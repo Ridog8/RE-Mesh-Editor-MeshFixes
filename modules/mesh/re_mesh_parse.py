@@ -678,6 +678,7 @@ class ParsedREMesh:
 			faceBufferList.append(reMesh.meshBufferHeader.faceBuffer)
 			
 			if reMesh.meshBufferHeader.secondaryWeightBuffer != None:
+				self.bufferHasSecondaryWeight = True
 				vertexDictList[-1]["SecondaryWeight"] = ReadWeightBuffer(reMesh.meshBufferHeader.secondaryWeightBuffer, tags = set())
 			
 			if reMesh.streamingInfoHeader != None and reMesh.streamingInfoHeader.entryCount != 0 and reMesh.streamingBuffer != None:

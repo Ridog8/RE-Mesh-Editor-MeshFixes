@@ -288,28 +288,6 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		raise Exception("Invalid mesh, submesh has no faces")
 	meshData.from_pydata(vertexList, [], faceList)
 	#print(f"DEBUG:\t Loaded {len(vertexList)} verts and {len(faceList)} faces")
-	#Import vertex normals
-	if vertexNormalList != []:
-		
-		
-		meshData.update(calc_edges=True)
-		#print(f"DEBUG:\tUpdated mesh data")
-		meshData.polygons.foreach_set("use_smooth", [True] * len(meshData.polygons))
-		#print(f"DEBUG:\tSet use smooth")
-		#print(f"DEBUG:\tVertex normal count {len(vertexNormalList)}")
-		meshData.validate()#Must call validate before setting custom normals or it can cause rare crashes when importing
-		meshData.normals_split_custom_set_from_vertices([normalizeVec(v) for v in vertexNormalList])
-		
-		#print(f"DEBUG:\tSet custom normals")
-		if bpy.app.version < (4,0,0):
-			meshData.use_auto_smooth = True
-			meshData.calc_normals_split()
-		#print(f"DEBUG:\t Loaded vertex normals")
-		"""
-		meshData.use_auto_smooth = True
-		meshData.polygons.foreach_set("use_smooth", [True] * len(meshData.polygons))
-		meshData.normals_split_custom_set_from_vertices(vertexNormalList)
-		"""
 	#Import UV Layers
 	UVLayerList = (UV0List,UV1List,UV2List)
 	for layerIndex,layer in enumerate(UVLayerList):
@@ -394,7 +372,7 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 				#print(vertexIndex)
 				#print(boneIndexList)
 				for weightIndex, boneIndex in enumerate(boneIndexList):
-					if vertexGroupWeightList[vertexIndex][weightIndex] > 0:
+					if vertexGroupWeightListSecondary[vertexIndex][weightIndex] > 0:
 						boneName = "SHAPEKEY_"+boneNameList[boneIndex]
 						if len(boneName) > 63:
 							boneName = f"#HASHED_{str(hashUTF8(boneName))}"
@@ -411,9 +389,33 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		#meshObj.matrix_parent_inverse = armature.matrix_world.inverted()
 	if rotate90:
 		meshObj.data.transform(rotate90Matrix)
-			
-		
-		#meshObj.matrix_world = meshObj.matrix_world @ rotate90Matrix
+
+	# This import has been moved after the rotation
+	if vertexNormalList != []:
+		meshObj.data.update(calc_edges=True)
+		meshObj.data.polygons.foreach_set("use_smooth", [True] * len(meshObj.data.polygons))
+		meshObj.data.validate()
+
+		transformedNormals = []
+
+		for n in vertexNormalList:
+			normal = Vector(n)
+
+			if rotate90:
+				normal = rotate90Matrix.to_3x3() @ normal
+
+			if normal.length != 0:
+				normal.normalize()
+
+			transformedNormals.append(normal)
+
+		meshObj.data.normals_split_custom_set_from_vertices(transformedNormals)
+
+		if bpy.app.version < (4,0,0):
+			meshObj.data.use_auto_smooth = True
+			meshObj.data.calc_normals_split()
+
+		meshObj.data.update()
 	if material != None:
 		meshObj.data.materials.append(material)
 	if collection != None:
@@ -1458,15 +1460,6 @@ def exportREMeshFile(filePath,options):
 					evaluatedSubMeshData.calc_tangents()
 				except:
 					pass
-				if len(evaluatedSubMeshData.vertices) > MAX_VERTICES_EXTENDED:
-					addErrorToDict(errorDict, "MaxVerticesExceeded", rawsubmesh.name)
-				if len(evaluatedSubMeshData.vertices) > MAX_VERTICES:
-					parsedMesh.bufferHasIntFaces = True
-					raiseWarning(f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}.")
-				vertexCount += len(evaluatedSubMeshData.vertices)
-				
-				faceCount += len(evaluatedSubMeshData.polygons)
-				
 				vertexGroupIndexToRemapDict = {vgroup.index: remapDict[vgroup.name.removeprefix("SHAPEKEY_")] for vgroup in rawsubmesh.vertex_groups}
 				
 				#DD2 shape key vertex group indices
@@ -1474,180 +1467,393 @@ def exportREMeshFile(filePath,options):
 				if len(shapeKeyGroupIndices) != 0:
 					parsedMesh.bufferHasSecondaryWeight = True
 				
-				#print(vertexGroupIndexToRemapDict)
+				splitLoopVertices = options.get("splitLoopVertices", True)
+
 				parsedMesh.bufferHasPosition = True
-				parsedSubMesh.vertexPosList = np.zeros((len(evaluatedSubMeshData.vertices),3))
 				parsedMesh.bufferHasNorTan = True
-				parsedSubMesh.normalList = np.zeros((len(evaluatedSubMeshData.vertices),3))
-				parsedSubMesh.tangentList = np.zeros((len(evaluatedSubMeshData.vertices),4),dtype="<B")
-				if armatureObj != None:
-					parsedMesh.bufferHasWeight = True
-					parsedSubMesh.weightList = np.zeros((len(evaluatedSubMeshData.vertices),8))
-					parsedSubMesh.weightIndicesList = np.zeros((len(evaluatedSubMeshData.vertices),8),dtype="<H")#ushort because of SF6
-					#In case weights exceed standard maximum
-					parsedSubMesh.extraWeightList = np.zeros((len(evaluatedSubMeshData.vertices),8))
-					parsedSubMesh.extraWeightIndicesList = np.zeros((len(evaluatedSubMeshData.vertices),8),dtype="<H")#ushort because of SF6
-					if parsedMesh.bufferHasSecondaryWeight:
-						parsedSubMesh.secondaryWeightList = np.zeros((len(evaluatedSubMeshData.vertices),8))
-						parsedSubMesh.secondaryWeightIndicesList = np.zeros((len(evaluatedSubMeshData.vertices),8),dtype="<H")#ushort because of SF6
-				#Get Faces
-				parsedSubMesh.faceList = [tuple(f.vertices) for f in evaluatedSubMeshData.polygons]
-				if len(parsedSubMesh.faceList) > MAX_FACES:
-					addErrorToDict(errorDict, "MaxFacesExceeded", rawsubmesh.name)
-				if any([len(face) != 3 for face in parsedSubMesh.faceList]):
-					addErrorToDict(errorDict, "NonTriangulatedFace", rawsubmesh.name)
-				if len(evaluatedSubMeshData.uv_layers) > 0:
-					parsedSubMesh.uvList = np.zeros((len(evaluatedSubMeshData.vertices),2))
-					meshHasUV = True
+
+				meshHasUV = len(evaluatedSubMeshData.uv_layers) > 0
+				if meshHasUV:
 					parsedMesh.bufferHasUV = True
 				else:
-					meshHasUV = False
 					addErrorToDict(errorDict, "NoUVMapOnSubMesh", rawsubmesh.name)
-				if len(evaluatedSubMeshData.uv_layers) > 1:
-					meshHasUV2 = True
-					parsedSubMesh.uv2List = np.zeros((len(evaluatedSubMeshData.vertices),2))
-					parsedMesh.bufferHasUV2 = True
-				else:	
-					parsedSubMesh.uv2List = None
-					meshHasUV2 = False
-				if len(evaluatedSubMeshData.vertex_colors) > 0:
-					parsedSubMesh.colorList = np.zeros((len(evaluatedSubMeshData.vertices),4))
-					meshHasColor = True
-					parsedMesh.bufferHasColor = True
-				else:
-					meshHasColor = False
-					parsedSubMesh.colorList = None
-				
-				#Credit to RaiderB and WoefulWolf for this, I thought this way of getting vertex data was pretty efficient
-				#Get Vertex Data
-				sortedLoops = sorted(evaluatedSubMeshData.loops, key=lambda loop: loop.vertex_index)
-				previousIndex = -1
-				
-				#These are used to check if there's multiple uvs per vertex
-				#If the current vert is already in the set, throw an error
-				
-				UVPoints = dict()
-				UV2Points = dict()
-				for loop in sortedLoops:
-					currentVertIndex = loop.vertex_index
-					#Vertex UV
-					if meshHasUV:
-						uv = evaluatedSubMeshData.uv_layers[0].data[loop.index].uv
-						parsedSubMesh.uvList[currentVertIndex] = uv
-						
-						if currentVertIndex in UVPoints and UVPoints[currentVertIndex] != uv:
-							addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
-							#print(f"ERROR: Multiple UVs per vertex on UV1 of {rawsubmesh.name}")
-							#raise Exception
-						else:
-							UVPoints[currentVertIndex] = uv
-						#else:
-							#print(f"ERROR: Multiple UVs per vertex on UV1 of {evaluatedSubMeshData.name}")
-							#raise Exception
-					if meshHasUV2:
-						uv2 = evaluatedSubMeshData.uv_layers[1].data[loop.index].uv
-						parsedSubMesh.uv2List[currentVertIndex] = uv2
-						
-						if currentVertIndex in UV2Points and UV2Points[currentVertIndex] != uv2:
-							addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
-							#print(f"ERROR: Multiple UVs per vertex on UV2 of {rawsubmesh.name}")
-							#raise Exception
-						else:
-							UV2Points[currentVertIndex] = uv2
-					
-					if currentVertIndex == previousIndex:#Skip looping over vertices that have already been read
-						continue
 
-					previousIndex = currentVertIndex
-					#Vertex Pos
-					vertex = evaluatedSubMeshData.vertices[currentVertIndex]
-					parsedSubMesh.vertexPosList[currentVertIndex] = vertex.co
-					
-					#Vertex Normal
-					
-					parsedSubMesh.normalList[currentVertIndex] = loop.normal
-					
-					#Vertex Tangent
-					
-					loopTangent = loop.tangent * 1.001 * 127
+				meshHasUV2 = len(evaluatedSubMeshData.uv_layers) > 1
+				if meshHasUV2:
+					parsedMesh.bufferHasUV2 = True
+
+				meshHasColor = len(evaluatedSubMeshData.vertex_colors) > 0
+				if meshHasColor:
+					parsedMesh.bufferHasColor = True
+
+				if armatureObj != None:
+					parsedMesh.bufferHasWeight = True
+
+				def _round_tuple(values, places=6):
+					return tuple(round(float(v), places) for v in values)
+
+				def _pack_loop_tangent(loop):
+					loopTangent = loop.tangent * 1.001 * 127.0
+
 					tx = int(floor(loopTangent[0])) & 0xFF
 					ty = int(floor(loopTangent[1])) & 0xFF
 					tz = int(floor(loopTangent[2])) & 0xFF
-					sign = int(floor(loop.bitangent_sign*127.0)) & 0xFF
+					sign = int(floor(loop.bitangent_sign * 127.0)) & 0xFF
 
-					parsedSubMesh.tangentList[currentVertIndex] = (tx, ty, tz, sign)
-					
-					
-					#Vertex Color	
-					if meshHasColor:
-						parsedSubMesh.colorList[currentVertIndex] = evaluatedSubMeshData.vertex_colors[0].data[loop.index].color
-						
-				
-					#Bone Weights
-					MIN_WEIGHT = 0.002#If the weight is any lower than this, the engine freaks out and puts the vert at the origin
+					return (tx, ty, tz, sign)
+
+				def _get_vertex_weights(vertex):
+					MIN_WEIGHT = 0.002
+
 					weightList = []
 					weightIndicesList = []
-					
+
+					extraWeightList = [0.0] * 8
+					extraWeightIndicesList = [0] * 8
+
 					secondaryWeightList = []
 					secondaryWeightIndicesList = []
-					
-					if parsedMesh.bufferHasWeight:
-						paddingValue = 0#Pad bone indices with last value
-						for g in vertex.groups:
-							if (g.weight >= MIN_WEIGHT or g.group in shapeKeyGroupIndices) and g.group < vertexGroupCount:
-								if g.group in shapeKeyGroupIndices:#DD2 shapekey weights
-									#print(f"Added secondary weight Vertex {currentVertIndex}")
-									secondaryWeightList.append(g.weight)
-									secondaryWeightIndicesList.append(vertexGroupIndexToRemapDict[g.group])
-									#print(f"Added secondary weight: Vert {currentVertIndex}, {parsedMesh.skeleton.weightedBones[vertexGroupIndexToRemapDict[g.group]]}")
-									#Gather vertex positions of bone weights to generate bone bounding box
-									boneVertDict[parsedMesh.skeleton.weightedBones[secondaryWeightIndicesList[-1]]].append(vertex.co)
-								else:
-									weightList.append(g.weight)
-									weightIndicesList.append(vertexGroupIndexToRemapDict[g.group])
-									if padWithLastWeightIndex:
-										paddingValue = vertexGroupIndexToRemapDict[g.group]
-									lastWeightedIndex = vertexGroupIndexToRemapDict[g.group]#For pragmata
-									#Gather vertex positions of bone weights to generate bone bounding box
-									boneVertDict[parsedMesh.skeleton.weightedBones[weightIndicesList[-1]]].append(vertex.co)
-						"""
-						weightList = [g.weight for g in vertex.groups]
-						try:
-							weightIndicesList = [vertexGroupIndexToRemapDict[g.group] for g in vertex.groups]
-						except Exception as err:
-							raiseWarning("Bone Remap Dict Error: "+str(err))
-							addErrorToDict(errorDict, "InvalidWeights", rawsubmesh.name)
-						"""
-						#print(weightIndicesList)
-						if len(weightList) > maxWeightsPerVertex:
-							parsedMesh.bufferHasExtraWeight = True
-							if gameName not in EXTENDED_WEIGHT_GAMES:#Limit extra vertex weights to MH Wilds for now since I haven't tested which games extra weights can work on.
-								addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
-							
-							parsedSubMesh.extraWeightList[currentVertIndex] = list(pad(weightList[maxWeightsPerVertex:],size=8,padding=0.0))
-							parsedSubMesh.extraWeightIndicesList[currentVertIndex] = list(pad(weightIndicesList[maxWeightsPerVertex:],size=8,padding=paddingValue))
-							#print(rawsubmesh.name)
-							#print(currentVertIndex)
-							#print(parsedSubMesh.extraWeightList[currentVertIndex])
-							#print(parsedSubMesh.extraWeightIndicesList[currentVertIndex])
-							if len(weightList) > maxWeightsPerVertexExtended:
-								addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
+
+					paddingValue = 0
+
+					if not parsedMesh.bufferHasWeight:
+						return ([0.0] * 8, [0] * 8,	extraWeightList, extraWeightIndicesList, [0.0] * 8,	[0] * 8,)
+
+					for g in vertex.groups:
+						if g.group >= vertexGroupCount:
+							continue
+
+						if g.group not in vertexGroupIndexToRemapDict:
+							continue
+
+						if g.weight < MIN_WEIGHT and g.group not in shapeKeyGroupIndices:
+							continue
+
+						remappedBoneIndex = vertexGroupIndexToRemapDict[g.group]
+
+						if g.group in shapeKeyGroupIndices:
+							secondaryWeightList.append(g.weight)
+							secondaryWeightIndicesList.append(remappedBoneIndex)
+
+							if parsedMesh.skeleton != None and remappedBoneIndex < len(parsedMesh.skeleton.weightedBones):
+								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
+
 						else:
-							parsedSubMesh.extraWeightList[currentVertIndex] = [0.0]*8
-							parsedSubMesh.extraWeightIndicesList[currentVertIndex] = [0]*8
-						
-						if len(secondaryWeightList) > maxWeightsPerVertex:
+							weightList.append(g.weight)
+							weightIndicesList.append(remappedBoneIndex)
+
+							if padWithLastWeightIndex:
+								paddingValue = remappedBoneIndex
+
+							if parsedMesh.skeleton != None and remappedBoneIndex < len(parsedMesh.skeleton.weightedBones):
+								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
+
+					if len(weightList) > maxWeightsPerVertex:
+						parsedMesh.bufferHasExtraWeight = True
+
+						if gameName not in EXTENDED_WEIGHT_GAMES:
 							addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
-						
-						parsedSubMesh.weightList[currentVertIndex] = list(pad(weightList[:maxWeightsPerVertex],size=8,padding=0.0))
-						parsedSubMesh.weightIndicesList[currentVertIndex] = list(pad(weightIndicesList[:maxWeightsPerVertex],size=8,padding=paddingValue))
+
+						extraWeightList = list(
+							pad(weightList[maxWeightsPerVertex:], size=8, padding=0.0)
+						)
+
+						extraWeightIndicesList = list(
+							pad(weightIndicesList[maxWeightsPerVertex:], size=8, padding=paddingValue)
+						)
+
+						if len(weightList) > maxWeightsPerVertexExtended:
+							addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
+
+					if len(secondaryWeightList) > maxWeightsPerVertex:
+						addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
+
+					weightList8 = list(
+						pad(weightList[:maxWeightsPerVertex], size=8, padding=0.0)
+					)
+
+					weightIndicesList8 = list(
+						pad(weightIndicesList[:maxWeightsPerVertex], size=8, padding=paddingValue)
+					)
+
+					secondaryWeightList8 = list(
+						pad(secondaryWeightList[:maxWeightsPerVertex], size=8, padding=0.0)
+					)
+
+					secondaryWeightIndicesList8 = list(
+						pad(secondaryWeightIndicesList[:maxWeightsPerVertex], size=8, padding=0)
+					)
+
+					return (weightList8, weightIndicesList8, extraWeightList, extraWeightIndicesList, secondaryWeightList8,	secondaryWeightIndicesList8,)
+
+				if splitLoopVertices:
+					exportVertexMap = {}
+
+					outPositions = []
+					outNormals = []
+					outTangents = []
+					outUV0 = []
+					outUV1 = []
+					outColors = []
+
+					outWeights = []
+					outWeightIndices = []
+					outExtraWeights = []
+					outExtraWeightIndices = []
+					outSecondaryWeights = []
+					outSecondaryWeightIndices = []
+
+					outFaces = []
+					usedOriginalVertexIndices = set()
+
+					for poly in evaluatedSubMeshData.polygons:
+						if len(poly.vertices) != 3:
+							addErrorToDict(errorDict, "NonTriangulatedFace", rawsubmesh.name)
+							continue
+
+						newFace = []
+
+						for loopIndex in poly.loop_indices:
+							loop = evaluatedSubMeshData.loops[loopIndex]
+							srcVertIndex = loop.vertex_index
+							vertex = evaluatedSubMeshData.vertices[srcVertIndex]
+
+							usedOriginalVertexIndices.add(srcVertIndex)
+
+							normal = loop.normal.copy()
+							if normal.length != 0:
+								normal.normalize()
+
+							tangentPacked = _pack_loop_tangent(loop)
+
+							uv0 = evaluatedSubMeshData.uv_layers[0].data[loopIndex].uv.copy() if meshHasUV else None
+							uv1 = evaluatedSubMeshData.uv_layers[1].data[loopIndex].uv.copy() if meshHasUV2 else None
+							color = evaluatedSubMeshData.vertex_colors[0].data[loopIndex].color if meshHasColor else None
+
+							# Splitting if the loop normal, UV, tangent, or color attrib. is different.
+							exportKey = (srcVertIndex,	_round_tuple(normal), tangentPacked, _round_tuple(uv0) if uv0 is not None else None, _round_tuple(uv1) if uv1 is not None else None, _round_tuple(color) if color is not None else None,)
+
+							if exportKey not in exportVertexMap:
+								newExportIndex = len(outPositions)
+								exportVertexMap[exportKey] = newExportIndex
+
+								outPositions.append(tuple(vertex.co))
+								outNormals.append(tuple(normal))
+								outTangents.append(tangentPacked)
+
+								if meshHasUV:
+									outUV0.append(tuple(uv0))
+
+								if meshHasUV2:
+									outUV1.append(tuple(uv1))
+
+								if meshHasColor:
+									outColors.append(tuple(color))
+
+								if parsedMesh.bufferHasWeight:
+									(
+										weightList8,
+										weightIndicesList8,
+										extraWeightList8,
+										extraWeightIndicesList8,
+										secondaryWeightList8,
+										secondaryWeightIndicesList8,
+									) = _get_vertex_weights(vertex)
+
+									outWeights.append(weightList8)
+									outWeightIndices.append(weightIndicesList8)
+									outExtraWeights.append(extraWeightList8)
+									outExtraWeightIndices.append(extraWeightIndicesList8)
+
+									if parsedMesh.bufferHasSecondaryWeight:
+										outSecondaryWeights.append(secondaryWeightList8)
+										outSecondaryWeightIndices.append(secondaryWeightIndicesList8)
+
+							newFace.append(exportVertexMap[exportKey])
+
+						outFaces.append(tuple(newFace))
+
+					parsedSubMesh.vertexPosList = np.asarray(outPositions, dtype=np.float32)
+					parsedSubMesh.normalList = np.asarray(outNormals, dtype=np.float32)
+					parsedSubMesh.tangentList = np.asarray(outTangents, dtype="<B")
+					parsedSubMesh.faceList = outFaces
+
+					if meshHasUV:
+						parsedSubMesh.uvList = np.asarray(outUV0, dtype=np.float32)
+					else:
+						parsedSubMesh.uvList = []
+
+					if meshHasUV2:
+						parsedSubMesh.uv2List = np.asarray(outUV1, dtype=np.float32)
+					else:
+						parsedSubMesh.uv2List = None
+
+					if meshHasColor:
+						parsedSubMesh.colorList = np.asarray(outColors, dtype=np.float32)
+					else:
+						parsedSubMesh.colorList = None
+
+					if parsedMesh.bufferHasWeight:
+						parsedSubMesh.weightList = np.asarray(outWeights, dtype=np.float32)
+						parsedSubMesh.weightIndicesList = np.asarray(outWeightIndices, dtype="<H")
+
+						parsedSubMesh.extraWeightList = np.asarray(outExtraWeights, dtype=np.float32)
+						parsedSubMesh.extraWeightIndicesList = np.asarray(outExtraWeightIndices, dtype="<H")
+
 						if parsedMesh.bufferHasSecondaryWeight:
-							parsedSubMesh.secondaryWeightList[currentVertIndex] = list(pad(secondaryWeightList,size=8,padding=0.0))
-							parsedSubMesh.secondaryWeightIndicesList[currentVertIndex] = list(pad(secondaryWeightIndicesList,size=8,padding=0))
-					
+							parsedSubMesh.secondaryWeightList = np.asarray(outSecondaryWeights, dtype=np.float32)
+							parsedSubMesh.secondaryWeightIndicesList = np.asarray(outSecondaryWeightIndices, dtype="<H")
+
+					exportVertexCount = len(parsedSubMesh.vertexPosList)
+
+					if exportVertexCount > MAX_VERTICES_EXTENDED:
+						addErrorToDict(errorDict, "MaxVerticesExceeded", rawsubmesh.name)
+
+					if exportVertexCount > MAX_VERTICES:
+						parsedMesh.bufferHasIntFaces = True
+						raiseWarning(
+							f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. "
+							f"Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}."
+						)
+
+					if len(parsedSubMesh.faceList) > MAX_FACES:
+						addErrorToDict(errorDict, "MaxFacesExceeded", rawsubmesh.name)
+
+					if len(usedOriginalVertexIndices) != len(evaluatedSubMeshData.vertices):
+						addErrorToDict(errorDict, "LooseVerticesOnSubMesh", rawsubmesh.name)
+
+					vertexCount += exportVertexCount
+					faceCount += len(parsedSubMesh.faceList)
+
+					print(
+						f"Export vertex remap on {rawsubmesh.name}: "
+						f"{len(evaluatedSubMeshData.vertices)} Original vertices -> "
+						f"{exportVertexCount} exported vertices"
+					)
+
+				else:
+					# Condition branch for 'legacy' handling. 1:1 vertex export from Blender.
+					legacyVertexCount = len(evaluatedSubMeshData.vertices)
+
+					parsedSubMesh.vertexPosList = np.zeros((legacyVertexCount, 3), dtype=np.float32)
+					parsedSubMesh.normalList = np.zeros((legacyVertexCount, 3), dtype=np.float32)
+					parsedSubMesh.tangentList = np.zeros((legacyVertexCount, 4), dtype="<B")
+
+					if parsedMesh.bufferHasWeight:
+						parsedSubMesh.weightList = np.zeros((legacyVertexCount, 8), dtype=np.float32)
+						parsedSubMesh.weightIndicesList = np.zeros((legacyVertexCount, 8), dtype="<H")
+						parsedSubMesh.extraWeightList = np.zeros((legacyVertexCount, 8), dtype=np.float32)
+						parsedSubMesh.extraWeightIndicesList = np.zeros((legacyVertexCount, 8), dtype="<H")
+
+						if parsedMesh.bufferHasSecondaryWeight:
+							parsedSubMesh.secondaryWeightList = np.zeros((legacyVertexCount, 8), dtype=np.float32)
+							parsedSubMesh.secondaryWeightIndicesList = np.zeros((legacyVertexCount, 8), dtype="<H")
+
+					parsedSubMesh.faceList = [tuple(f.vertices) for f in evaluatedSubMeshData.polygons]
+
+					if len(parsedSubMesh.faceList) > MAX_FACES:
+						addErrorToDict(errorDict, "MaxFacesExceeded", rawsubmesh.name)
+
+					if any([len(face) != 3 for face in parsedSubMesh.faceList]):
+						addErrorToDict(errorDict, "NonTriangulatedFace", rawsubmesh.name)
+
+					if meshHasUV:
+						parsedSubMesh.uvList = np.zeros((legacyVertexCount, 2), dtype=np.float32)
+					else:
+						parsedSubMesh.uvList = []
+
+					if meshHasUV2:
+						parsedSubMesh.uv2List = np.zeros((legacyVertexCount, 2), dtype=np.float32)
+					else:
+						parsedSubMesh.uv2List = None
+
+					if meshHasColor:
+						parsedSubMesh.colorList = np.zeros((legacyVertexCount, 4), dtype=np.float32)
+					else:
+						parsedSubMesh.colorList = None
+
+					sortedLoops = sorted(evaluatedSubMeshData.loops, key=lambda loop: loop.vertex_index)
+					previousIndex = -1
+					UVPoints = dict()
+					UV2Points = dict()
+					usedOriginalVertexIndices = set()
+
+					for loop in sortedLoops:
+						currentVertIndex = loop.vertex_index
+						usedOriginalVertexIndices.add(currentVertIndex)
+
+						if meshHasUV:
+							uv = evaluatedSubMeshData.uv_layers[0].data[loop.index].uv
+							parsedSubMesh.uvList[currentVertIndex] = uv
+
+							if currentVertIndex in UVPoints and UVPoints[currentVertIndex] != uv:
+								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
+							else:
+								UVPoints[currentVertIndex] = uv
+
+						if meshHasUV2:
+							uv2 = evaluatedSubMeshData.uv_layers[1].data[loop.index].uv
+							parsedSubMesh.uv2List[currentVertIndex] = uv2
+
+							if currentVertIndex in UV2Points and UV2Points[currentVertIndex] != uv2:
+								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
+							else:
+								UV2Points[currentVertIndex] = uv2
+
+						if currentVertIndex == previousIndex:
+							continue
+
+						previousIndex = currentVertIndex
+						vertex = evaluatedSubMeshData.vertices[currentVertIndex]
+
+						parsedSubMesh.vertexPosList[currentVertIndex] = vertex.co
+						parsedSubMesh.normalList[currentVertIndex] = loop.normal
+						parsedSubMesh.tangentList[currentVertIndex] = _pack_loop_tangent(loop)
+
+						if meshHasColor:
+							parsedSubMesh.colorList[currentVertIndex] = evaluatedSubMeshData.vertex_colors[0].data[loop.index].color
+
+						if parsedMesh.bufferHasWeight:
+							(
+								weightList8,
+								weightIndicesList8,
+								extraWeightList8,
+								extraWeightIndicesList8,
+								secondaryWeightList8,
+								secondaryWeightIndicesList8,
+							) = _get_vertex_weights(vertex)
+
+							parsedSubMesh.weightList[currentVertIndex] = weightList8
+							parsedSubMesh.weightIndicesList[currentVertIndex] = weightIndicesList8
+							parsedSubMesh.extraWeightList[currentVertIndex] = extraWeightList8
+							parsedSubMesh.extraWeightIndicesList[currentVertIndex] = extraWeightIndicesList8
+
+							if parsedMesh.bufferHasSecondaryWeight:
+								parsedSubMesh.secondaryWeightList[currentVertIndex] = secondaryWeightList8
+								parsedSubMesh.secondaryWeightIndicesList[currentVertIndex] = secondaryWeightIndicesList8
+
+					if legacyVertexCount > MAX_VERTICES_EXTENDED:
+						addErrorToDict(errorDict, "MaxVerticesExceeded", rawsubmesh.name)
+
+					if legacyVertexCount > MAX_VERTICES:
+						parsedMesh.bufferHasIntFaces = True
+						raiseWarning(
+							f"{rawsubmesh.name} exceeded the standard limit of {str(MAX_VERTICES)} vertices. "
+							f"Enabling extended vertex limit of {str(MAX_VERTICES_EXTENDED)}."
+						)
+
+					if len(usedOriginalVertexIndices) != legacyVertexCount:
+						addErrorToDict(errorDict, "LooseVerticesOnSubMesh", rawsubmesh.name)
+
+					vertexCount += legacyVertexCount
+					faceCount += len(parsedSubMesh.faceList)
+
+					print(
+						f"Legacy vertex export on {rawsubmesh.name}: "
+						f"{legacyVertexCount} exported vertices"
+					)
+
 				visconGroup.subMeshList.append(parsedSubMesh)
-				if any([vertIndex not in UVPoints for vertIndex in range(len(evaluatedSubMeshData.vertices))]):
-					addErrorToDict(errorDict, "LooseVerticesOnSubMesh", rawsubmesh.name)  
 				
 				#End submesh
 			parsedLODLevel.visconGroupList.append(visconGroup)
@@ -1796,7 +2002,7 @@ def exportREMeshFile(filePath,options):
 		
 	
 	meshWriteStartTime = time.time()
-	reMesh = ParsedREMeshToREMesh(parsedMesh, meshVersion)
+	reMesh = ParsedREMeshToREMesh(parsedMesh, meshVersion, normalizeWeights=options.get("normalizeWeights", True))
 	if targetCollection != None:
 		reMesh.fileHeader.lodGroupNameHash = int(targetCollection.get("LODGroupNameHash","0"))
 	writeREMesh(reMesh, filePath)

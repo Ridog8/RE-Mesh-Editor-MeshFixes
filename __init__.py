@@ -1,8 +1,8 @@
 #Author: NSA Cloud
 bl_info = {
 	"name": "RE Mesh Editor",
-	"author": "NSA Cloud",
-	"version": (0, 66),
+	"author": "NSA Cloud, Forked by Ridog8",
+	"version": (0, 67),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
@@ -192,6 +192,8 @@ def setMeshExportDefaults(self):
 	self.rotate90 = bpy.context.preferences.addons[__name__].preferences.default_rotate90export
 	self.autoSolveRepeatedUVs = bpy.context.preferences.addons[__name__].preferences.default_autoSolveRepeatedUVs
 	self.preserveSharpEdges = bpy.context.preferences.addons[__name__].preferences.default_preserveSharpEdges
+	self.splitLoopVertices = bpy.context.preferences.addons[__name__].preferences.default_splitLoopVertices
+	self.normalizeWeights = bpy.context.preferences.addons[__name__].preferences.default_normalizeWeights
 	self.useBlenderMaterialName = bpy.context.preferences.addons[__name__].preferences.default_useBlenderMaterialName
 	self.preserveBoneMatrices = bpy.context.preferences.addons[__name__].preferences.default_preserveBoneMatrices
 	self.exportBoundingBoxes = bpy.context.preferences.addons[__name__].preferences.default_exportBoundingBoxes
@@ -559,6 +561,14 @@ class REMeshPreferences(AddonPreferences):
 	   name = "Split Sharp Edges",
 	   description = "Edge splits all edges marked as sharp to preserve them on the exported mesh.\nNOTE: This will modify the exported mesh",
 	   default = True)
+	default_splitLoopVertices : BoolProperty(
+	   name = "Split Vertices For Corner Attributes",
+	   description = "Creates extra exported vertices when loop/corner normals, tangents, UVs, or colors differ. Enable this to preserve hard normals and other data. Disable it to keep 1:1 vertex per Blender vertex.",
+	   default = True)
+	default_normalizeWeights : BoolProperty(
+	   name = "Normalize Weights",
+	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
+	   default = True)
 	default_useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",
@@ -650,6 +660,8 @@ class REMeshPreferences(AddonPreferences):
 			column2.prop(self, "default_exportAllLODs")
 			column2.prop(self,"default_autoSolveRepeatedUVs")
 			column2.prop(self,"default_preserveSharpEdges")
+			column2.prop(self,"default_splitLoopVertices")
+			column2.prop(self,"default_normalizeWeights")
 			column2.prop(self, "default_rotate90export")
 			column2.prop(self, "default_useBlenderMaterialName")
 			column2.prop(self, "default_preserveBoneMatrices")
@@ -985,6 +997,14 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "Split Sharp Edges",
 	   description = "Edge splits all edges marked as sharp to preserve them on the exported mesh.\nNOTE: This will modify the exported mesh",
 	   default = True)
+	splitLoopVertices : BoolProperty(
+	   name = "Split Vertices For Corner Attributes",
+	   description = "Creates extra exported vertices when loop/corner normals, tangents, UVs, or colors differ. Enable this to preserve hard normals and other data. Disable it to keep 1:1 vertex per Blender vertex.",
+	   default = True)
+	normalizeWeights : BoolProperty(
+	   name = "Normalize Weights",
+	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
+	   default = True)
 	useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",
@@ -1079,6 +1099,10 @@ class ExportREMesh(Operator, ExportHelper):
 		row2 = layout.row()
 		#row2.enabled = hasREToolbox
 		row2.prop(self,"preserveSharpEdges")
+		row3 = layout.row()
+		row3.prop(self,"splitLoopVertices")
+		row4 = layout.row()
+		row4.prop(self,"normalizeWeights")
 		
 
 		layout.prop(self, "rotate90")
@@ -1087,7 +1111,7 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
-		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges}
+		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges,"splitLoopVertices":self.splitLoopVertices,"normalizeWeights":self.normalizeWeights}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
 		except:
@@ -1112,6 +1136,8 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_path"] = self.filepath
 				bpy.data.collections[self.targetCollection]["BatchExport_exportAllLODs"] = self.exportAllLODs
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveSharpEdges"] = self.preserveSharpEdges
+				bpy.data.collections[self.targetCollection]["BatchExport_splitLoopVertices"] = self.splitLoopVertices
+				bpy.data.collections[self.targetCollection]["BatchExport_normalizeWeights"] = self.normalizeWeights
 				bpy.data.collections[self.targetCollection]["BatchExport_rotate90"] = self.rotate90
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBlendShapes"] = self.exportBlendShapes
 				bpy.data.collections[self.targetCollection]["BatchExport_useBlenderMaterialName"] = self.useBlenderMaterialName

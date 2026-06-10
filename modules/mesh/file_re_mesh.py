@@ -1759,7 +1759,64 @@ def WriteToUVBuffer(bufferStream,uvList):
 	#print(uvArray)
 	bufferStream.write(uvArray.tobytes())
 
-def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight):
+def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
+	# Helper function specifically for quantizing weight arrays to bytes and including the automatic pre-normalization option,
+	# (The one that normalizes the Blender float values before the byte conversion.)
+	boneWeightsArray = np.array(boneWeightsArray, dtype=np.float64)
+
+	if boneWeightsArray.size == 0:
+		return boneWeightsArray.astype("<B")
+
+	boneWeightsArray = np.clip(boneWeightsArray, 0.0, 1.0)
+
+	if not normalizeWeights:
+		quantizedWeights = np.rint(boneWeightsArray * 255.0)
+		quantizedWeights = np.clip(quantizedWeights, 0, 255)
+		return quantizedWeights.astype("<B")
+
+	weightSums = np.sum(boneWeightsArray, axis=1, dtype=np.float64)
+	normalizedWeights = np.zeros_like(boneWeightsArray, dtype=np.float64)
+	nonZeroRows = weightSums != 0
+
+	with np.errstate(divide='ignore', invalid='ignore'):
+		normalizedWeights[nonZeroRows] = boneWeightsArray[nonZeroRows] / weightSums[nonZeroRows, None]
+
+	normalizedWeights = np.clip(normalizedWeights, 0.0, 1.0)
+
+	scaledWeights = normalizedWeights * 255.0
+	quantizedWeights = np.floor(scaledWeights).astype(np.int32)
+	remainders = scaledWeights - quantizedWeights
+
+	rowDiffs = 255 - np.sum(quantizedWeights, axis=1, dtype=np.int32)
+
+	for rowIndex, diff in enumerate(rowDiffs):
+		if not nonZeroRows[rowIndex]:
+			continue
+
+		if diff > 0:
+			# This is sort of like a 'tie-breaker.' Gives the remaining bytes to the largest remainders first.
+			indices = np.argsort(-remainders[rowIndex], kind="stable")
+
+			for i in indices[:diff]:
+				quantizedWeights[rowIndex, i] += 1
+
+		elif diff < 0:
+			indices = np.argsort(remainders[rowIndex], kind="stable")
+			remaining = -int(diff)
+
+			for i in indices:
+				if remaining == 0:
+					break
+
+				if quantizedWeights[rowIndex, i] > 0:
+					quantizedWeights[rowIndex, i] -= 1
+					remaining -= 1
+
+	quantizedWeights = np.clip(quantizedWeights, 0, 255)
+	return quantizedWeights.astype("<B")
+
+
+def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight=False,normalizeWeights=True):
 	
 	if isSixWeight:
 		#TODO Do bitfield work in numpy
@@ -1785,33 +1842,9 @@ def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight
 	
 	
 	
-	boneWeightsArray = np.array(boneWeightsList)
+	boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsList, normalizeWeights)
 	
-	#Clean Weights
-	#boneWeightsArray = np.round(boneWeightsArray,decimals=4)
-	#MIN_FLOAT_VALUE = 0.01
-	#boneWeightsArray = np.where(((boneWeightsArray != 0) & (boneWeightsArray < MIN_FLOAT_VALUE)),0.0,boneWeightsArray)
-	
-	#boneWeightsArray = np.round(boneWeightsArray,decimals = 2)
-	weightSums = np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(weightSums)
-	#Normalize weights to 1.0
-	with np.errstate(divide='ignore', invalid='ignore'):
-	    boneWeightsArray = boneWeightsArray / weightSums[:,None]
-	    boneWeightsArray[weightSums == 0] = 0
-	boneWeightsArray = np.multiply(boneWeightsArray,255)
-	boneWeightsArray = np.round(boneWeightsArray)
-	diffSums = 255.0 - np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(diffSums)
-	#for i in range(len(boneWeightsArray)):
-		#print(f"{boneWeightsArray[i]}, difference: {diffSums[i]}")
-	
-	#Add difference of 255 to the largest value of each row in weight array
-	boneWeightsArray[np.arange(boneWeightsArray.shape[0]), np.argmax(boneWeightsArray, axis=1)] += diffSums
-	#boneWeightsArray[:, 0] += diffSums
-	boneWeightsArray = boneWeightsArray.astype("<B")
-	
-	if (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
+	if normalizeWeights and (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
 		raiseWarning("Non normalized weights detected on sub mesh! Weights may not behave as expected in game!")
 	
 	#Set zero weight bone indices to 0
@@ -1823,7 +1856,7 @@ def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight
 	#print(weightArray)
 	bufferStream.write(weightArray.tobytes())
 
-def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,extraBufferStream,extraBoneWeightsList,extraBoneIndicesList,isSixWeight):
+def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,extraBufferStream,extraBoneWeightsList,extraBoneIndicesList,isSixWeight=False,normalizeWeights=True):
 	
 	if isSixWeight:
 		#TODO Do bitfield work in numpy
@@ -1867,34 +1900,11 @@ def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,ext
 	
 	
 	boneWeightsArray = np.array(boneWeightsList)
-	#Combine extra weights with first set so that they're normalized together
+	#Combine extra weights with first set so that they are normalized and quantized together
 	boneWeightsArray = np.hstack((boneWeightsArray,np.array(extraBoneWeightsList)))
-	#print(boneWeightsArray)
-	#Clean Weights
-	#boneWeightsArray = np.round(boneWeightsArray,decimals=4)
-	#MIN_FLOAT_VALUE = 0.01
-	#boneWeightsArray = np.where(((boneWeightsArray != 0) & (boneWeightsArray < MIN_FLOAT_VALUE)),0.0,boneWeightsArray)
+	boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
 	
-	#boneWeightsArray = np.round(boneWeightsArray,decimals = 2)
-	weightSums = np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(weightSums)
-	#Normalize weights to 1.0
-	with np.errstate(divide='ignore', invalid='ignore'):
-	    boneWeightsArray = boneWeightsArray / weightSums[:,None]
-	    boneWeightsArray[weightSums == 0] = 0
-	boneWeightsArray = np.multiply(boneWeightsArray,255)
-	boneWeightsArray = np.round(boneWeightsArray)
-	diffSums = 255.0 - np.sum(boneWeightsArray,axis = 1,dtype = np.float32)
-	#print(diffSums)
-	#for i in range(len(boneWeightsArray)):
-		#print(f"{boneWeightsArray[i]}, difference: {diffSums[i]}")
-	
-	#Add difference of 255 to the largest value of each row in weight array
-	boneWeightsArray[np.arange(boneWeightsArray.shape[0]), np.argmax(boneWeightsArray, axis=1)] += diffSums
-	#boneWeightsArray[:, 0] += diffSums
-	boneWeightsArray = boneWeightsArray.astype("<B")
-	
-	if (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
+	if normalizeWeights and (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
 		raiseWarning("Non normalized weights detected on sub mesh! Weights may not behave as expected in game!")
 	
 	#Set zero weight bone indices to 0
@@ -1971,7 +1981,7 @@ class sizeData:
 			
 		self.VERTEX_ELEMENT_SIZE = 8
 
-def ParsedREMeshToREMesh(parsedMesh,meshVersion):
+def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	print(f"Mesh Version:{meshVersion}")
 	version = meshFileVersionToNewVersionDict.get(meshVersion,getNearestRemapVersion(meshVersion)) 
 	print(f"Remapped Version:{version}")
@@ -2088,13 +2098,13 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 						
 						if len(parsedSubMesh.weightIndicesList) != 0 and len(parsedSubMesh.weightIndicesList) == len(parsedSubMesh.weightList):
 							if parsedMesh.bufferHasExtraWeight and len(parsedSubMesh.extraWeightIndicesList) != 0 and len(parsedSubMesh.extraWeightIndicesList) == len(parsedSubMesh.extraWeightList):
-								WriteToWeightBufferExtended(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,extraWeightBuffer,parsedSubMesh.extraWeightList,parsedSubMesh.extraWeightIndicesList,isSixWeight)
+								WriteToWeightBufferExtended(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,extraWeightBuffer,parsedSubMesh.extraWeightList,parsedSubMesh.extraWeightIndicesList,isSixWeight,normalizeWeights)
 							else:
-								WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,isSixWeight)
+								WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,isSixWeight,normalizeWeights)
 						
 						#DD2 shapekeys
 						if len(parsedSubMesh.secondaryWeightIndicesList) != 0 and len(parsedSubMesh.secondaryWeightIndicesList) == len(parsedSubMesh.secondaryWeightList):
-							WriteToWeightBuffer(secondaryWeightBuffer,parsedSubMesh.secondaryWeightList,parsedSubMesh.secondaryWeightIndicesList,isSixWeight)
+							WriteToWeightBuffer(secondaryWeightBuffer,parsedSubMesh.secondaryWeightList,parsedSubMesh.secondaryWeightIndicesList,isSixWeight,normalizeWeights)
 						
 						
 						#Add vertex color if it's missing and other meshes have it
@@ -2199,7 +2209,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion):
 						if parsedSubMesh.uv2List != []:
 							WriteToUVBuffer(UV2Buffer,parsedSubMesh.uv2List)
 						if parsedSubMesh.weightIndicesList != [] and parsedSubMesh.weightList != []:
-							WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList)
+							WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,False,normalizeWeights)
 						if parsedSubMesh.colorList != []:
 							WriteToColorBuffer(colorBuffer,parsedSubMesh.colorList)
 						
