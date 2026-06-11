@@ -1,6 +1,6 @@
 This fork aims to fix various mesh issues as of v0.66 from the main repository.
 **What's mainly changed?**
-1. Custom weights are now more precise. There is a hard limitation for the precision of weights that can be stored in the mesh format. However, they are handled a bit differently to get closer to the original weight. Note, that I intentionally used the words 'custom weights', as vanilla mesh weights should already be packed in a format that keeps weights 1:1 between import/export.
+1. Custom weights are now more accurate. There is a hard limitation for the precision of weights that can be stored in the mesh format. However, with this they are handled a bit differently to get closer to the original weight. Note, that I intentionally used the words 'custom weights', as vanilla mesh weights should already be packed in a format that keeps weights 1:1 between import/export.
 Cube test example with custom weights for each group:
 Before Export:
 0.165, 0.207, 0.092, 0.194, 0.191, 0.150
