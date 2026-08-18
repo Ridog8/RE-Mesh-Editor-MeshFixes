@@ -10,9 +10,7 @@
 #5. The parsed mesh format is rebuilt inside blender_re_mesh.py once it has been error checked
 #6. The parsed format is passed back to file_re_mesh.py and rebuilt into a mesh structure (ParsedREMeshToREMesh())
 
-IMPORT_BLEND_SHAPES = False#Disabled by default because it's broken at the moment.
-#Set to True if you want to try to fix blend shape importing. The relevant code is in re_mesh_parse.py.
-#There's something wrong with getting the amount of deltas and also the way the deltas are parsed is not correct.
+IMPORT_BLEND_SHAPES = True
 
 #Meshes to test blend shapes with:
 #MHR player face "F:\MHR_EXTRACT\extract\re_chunk_000\natives\STM\player\mod\face\pl_face000.mesh.2109148288"
@@ -58,6 +56,10 @@ VERSION_MHWILDS = 130#file:241111606,internal:240704828
 VERSION_PRAGDEMO = 135#file:250925211,internal:250707828
 VERSION_MHS3 = 136#file:250604100,internal:250203152
 VERSION_RE9 = 140#file:250925211,internal:250707828#RE9 Placeholder
+
+BLEND_SHAPE_VERSIONS = frozenset((
+	VERSION_MHWILDS,
+))
 
 SIX_WEIGHT_GAMES = frozenset([
 	VERSION_SF6,
@@ -1229,15 +1231,19 @@ class BlendTarget():
 			file.seek(currentPos)
 		
 	def write(self,file,version):#TODO FIX WRITE
-		write_uint64(file, self.count)
-		write_uint64(file, self.mainOffset)
-		write_uint64(file, self.zero)
-		write_uint64(file, self.hash)
-		for entry in self.blendShapeOffsetList:
-			write_uint64(file,entry)
-		
-		for entry in self.blendShapeList:#TODO FIX WRITE
-			entry.write(file)
+		if version < VERSION_SF6:
+			write_uint(file, self.subMeshVertexStartIndex)
+			write_uint(file, self.vertCount)
+			write_ushort(file, self.blendSSIndex)
+			write_ushort(file, self.blendShapeNum)
+			write_uint(file, self.deltaOffset)
+		else:
+			write_ushort(file, self.blendSSIndex)
+			write_ushort(file, self.blendShapeNum)
+			write_ushort(file, self.unkn0)
+			write_ubyte(file, self.subMeshEntryCount)
+			write_ubyte(file, self.unkn2)
+			write_uint64(file, self.subMeshEntryOffset)
 
 class BlendShapeData():
 	def __init__(self):
@@ -1264,8 +1270,11 @@ class BlendShapeData():
 		self.aabbOffset = read_uint64(file)
 		self.blendSOffset = read_uint64(file)
 		self.blendSSOffset = read_uint64(file)
+		serializedTargetCount = int(self.targetCount)
+		if version == VERSION_MHWILDS:
+			serializedTargetCount += int(self.typing)
 		file.seek(self.dataOffset)
-		for i in range(0,self.targetCount):
+		for i in range(0,serializedTargetCount):
 			blendTargetEntry = BlendTarget()
 			blendTargetEntry.read(file,version)
 			self.blendTargetList.append(blendTargetEntry)
@@ -1275,12 +1284,14 @@ class BlendShapeData():
 			aabbEntry = AABB()
 			aabbEntry.read(file)
 			self.aabbList.append(aabbEntry)
+		file.seek(self.blendSOffset)
 		self.blendS = [read_int(file),read_int(file),read_int(file)]
+		file.seek(self.blendSSOffset)
 		self.blendSSList = []
 		for blendTarget in self.blendTargetList:
 			for i in range(0,blendTarget.blendShapeNum):
 				self.blendSSList.append(read_int(file))
-	def write(self,file):#TODO FIX WRITE
+	def write(self,file,version):
 		write_ushort(file, self.targetCount)
 		write_ushort(file, self.typing)
 		write_uint(file, self.unknFlag)
@@ -1290,15 +1301,31 @@ class BlendShapeData():
 		write_uint64(file, self.aabbOffset)
 		write_uint64(file, self.blendSOffset)
 		write_uint64(file, self.blendSSOffset)
-		write_uint(file, self.vertOffset)
-		write_uint(file, self.vertCount)
-		write_ushort(file, self.visconTarget)
-		write_ushort(file,self.blendShapeCount)
-		self.aabb.write(file)
+		maxEndPos = file.tell()
+		if version >= VERSION_SF6:
+			for target in self.blendTargetList:
+				if target.subMeshEntryOffset:
+					file.seek(target.subMeshEntryOffset)
+					for subMeshEntry in target.subMeshEntryList:
+						subMeshEntry.write(file)
+					maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.dataOffset)
+		for target in self.blendTargetList:
+			target.write(file,version)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.aabbOffset)
+		for entry in self.aabbList:
+			entry.write(file)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.blendSOffset)
 		for entry in self.blendS:
 			write_int(file,entry)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(self.blendSSOffset)
 		for entry in self.blendSSList:
 			write_int(file,entry)
+		maxEndPos = max(maxEndPos, file.tell())
+		file.seek(getPaddedPos(maxEndPos, 16))
 
 class BlendShapeHeader():
 	def __init__(self):
@@ -1308,7 +1335,6 @@ class BlendShapeHeader():
 		self.hash = 0
 		self.blendShapeOffsetList = []
 		self.blendShapeList = []	
-		#TODO Blend shapes are different in wilds, fix
 		
 	def read(self,file,version):
 		self.count = read_uint64(file)
@@ -1333,14 +1359,26 @@ class BlendShapeHeader():
 		
 	def write(self,file,version):
 		write_uint64(file, self.count)
-		write_uint64(file, self.mainOffset)
-		write_uint64(file, self.zero)
+		if version < VERSION_ONI2:
+			write_uint64(file, self.mainOffset)
+			write_uint64(file, self.zero)
+		else:
+			write_uint64(file, self.zero)
+			write_uint64(file, self.mainOffset)
 		write_uint64(file, self.hash)
 		for entry in self.blendShapeOffsetList:
 			write_uint64(file,entry)
 		
-		for entry in self.blendShapeList:#TODO FIX WRITE
+		maxEndPos = file.tell()
+		physicalOffsets = list(
+			getattr(self, "_physicalBlendOffsets", [])
+			or self.blendShapeOffsetList
+		)
+		for entry, offset in zip(self.blendShapeList, physicalOffsets):
+			file.seek(offset)
 			entry.write(file,version)
+			maxEndPos = max(maxEndPos, file.tell())
+		file.seek(getPaddedPos(maxEndPos, 16))
 
 class BoneAABBGroup():
 	def __init__(self):
@@ -1470,7 +1508,8 @@ class FloatData():
 		self.unknDataList = []
 		
 	def read(self,file):
-		self.count = read_uint64(file)
+		self.bufferSize = read_uint64(file)
+		self.count = self.bufferSize
 		self.offset = read_uint64(file)
 		self.unknDataList = []
 		startPos = file.tell()
@@ -1534,14 +1573,7 @@ class REMesh():
 			file.seek(self.fileHeader.skeletonOffset)
 			self.skeletonHeader = Skeleton()
 			self.skeletonHeader.read(file)
-		#TODO - Normal recalc is changed or offset is different in mhwilds
-		"""
-		if self.fileHeader.normalRecalcOffset:
-			file.seek(self.fileHeader.normalRecalcOffset)
-			self.normalRecalcHeader = NormalRecalc()
-			self.normalRecalcHeader.read(file,sum([i.vertexCount for i in self.lodHeader.lodGroupList[0].meshGroupList]),sum([i.faceCount for i in self.lodHeader.lodGroupList[0].meshGroupList]))
-		"""
-		if self.fileHeader.blendShapesOffset and IMPORT_BLEND_SHAPES:
+		if version in BLEND_SHAPE_VERSIONS and self.fileHeader.blendShapesOffset and IMPORT_BLEND_SHAPES:
 			file.seek(self.fileHeader.blendShapesOffset)
 			self.blendShapeHeader = BlendShapeHeader()
 			self.blendShapeHeader.read(file,version)
@@ -1557,8 +1589,33 @@ class REMesh():
 				self.streamingInfoHeader = StreamingInfo()
 				self.streamingInfoHeader.read(file)
 				if self.streamingInfoHeader.entryCount != 0 and streamingBuffer == None:
-					raiseError("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.\n\nExample Mesh Path: natives\\STM\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606\nExample Streaming Mesh Path: natives\\STM\\streaming\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606")
-					raise Exception("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.")
+					if version == VERSION_MHWILDS:
+						# Unified Wilds exports can keep stream-relative rows inside the
+						# main mesh, beginning at FileHeader.verticesOffset. Do not apply
+						# this fallback to other RE Engine games.
+						entries = self.streamingInfoHeader.streamingInfoEntryList
+						embeddedSize = max(
+							(
+								int(entry.bufferStart)
+								+ int(entry.bufferLength)
+								for entry in entries
+							),
+							default=0,
+						)
+						currentPos = file.tell()
+						if (
+							self.fileHeader.verticesOffset > 0
+							and embeddedSize > 0
+						):
+							file.seek(self.fileHeader.verticesOffset)
+							embedded = file.read(embeddedSize)
+							if len(embedded) == embeddedSize:
+								streamingBuffer = embedded
+								self.streamingBuffer = embedded
+						file.seek(currentPos)
+					if streamingBuffer == None:
+						raiseError("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.\n\nExample Mesh Path: natives\\STM\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606\nExample Streaming Mesh Path: natives\\STM\\streaming\\Art\\Model\\Character\\ch02\\007\\000\\1\\ch02_007_0001.mesh.241111606")
+						raise Exception("Streaming mesh file is missing. Both mesh files are required. Extract the corresponding mesh file from inside the streaming directory.")
 		if self.fileHeader.meshOffset:
 			file.seek(self.fileHeader.meshOffset)
 			self.meshBufferHeader = MeshBufferHeader()
@@ -1611,6 +1668,32 @@ class REMesh():
 			if self.fileHeader.skeletonOffset != file.tell():
 				print(f"ERROR IN OFFSET CALCULATION - skeletonOffset - expected {self.fileHeader.skeletonOffset}, actual {file.tell()}")
 			self.skeletonHeader.write(file)
+
+		# The Wilds normal-recalculation marker is a real 16-byte
+		# metadata record immediately before blendShapesOffset. The offset builder
+		# reserved this range; emit a zero placeholder here so the normal-contract
+		# finalizer can populate ({mode}, 0, 0, 0) after normal/pivot data is generated.
+		mhwildsMarkerOffset = int(
+			getattr(self, "_mhwildsNormalMarkerOffset", 0)
+		)
+		if mhwildsMarkerOffset:
+			if int(self.fileHeader.normalRecalcOffset) != mhwildsMarkerOffset:
+				raise RuntimeError(
+					"Wilds normal marker header/reservation mismatch: "
+					f"0x{int(self.fileHeader.normalRecalcOffset):X}/"
+					f"0x{mhwildsMarkerOffset:X}"
+				)
+			if file.tell() != mhwildsMarkerOffset:
+				raise RuntimeError(
+					"Wilds normal marker serialization position mismatch: "
+					f"0x{file.tell():X}/0x{mhwildsMarkerOffset:X}"
+				)
+			file.write(b"\x00" * 16)
+
+		if self.fileHeader.blendShapesOffset:
+			if self.fileHeader.blendShapesOffset != file.tell():
+				print(f"ERROR IN OFFSET CALCULATION - blendShapesOffset - expected {self.fileHeader.blendShapesOffset}, actual {file.tell()}")
+			self.blendShapeHeader.write(file,version)
 		
 		if self.fileHeader.materialNameRemapOffset and self.fileHeader.materialNameRemapOffset != file.tell():
 			print(f"ERROR IN OFFSET CALCULATION - materialNameRemapOffset - expected {self.fileHeader.materialNameRemapOffset}, actual {file.tell()}")
@@ -2025,7 +2108,11 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 		if version == VERSION_SF6:
 			reMesh.lodHeader.skinWeightCount = 9
 		elif version == VERSION_MHWILDS:
-			reMesh.lodHeader.skinWeightCount = 25#Not sure why but this fixes monsters causing crashes and dead hitbox issues
+			# Wilds declares 27 when the type-7 extended-weight element is
+			# exported. Declaring 25 makes the runtime select the six-influence
+			# skinning layout even though the 12-influence bytes are present.
+			reMesh.lodHeader.skinWeightCount = 27 if parsedMesh.bufferHasExtraWeight else 25
+			#print(f"Wilds V13 skinning header: extraWeight={int(bool(parsedMesh.bufferHasExtraWeight))}; skinWeightCount={reMesh.lodHeader.skinWeightCount}")
 		elif version == VERSION_PRAGDEMO:
 			reMesh.lodHeader.skinWeightCount = 27#
 		elif version == VERSION_RE9:
@@ -2263,6 +2350,28 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 		reMesh.skeletonHeader.boneInverseMatrixOffset = reMesh.skeletonHeader.boneWorldMatrixOffset + reMesh.skeletonHeader.boneCount * sd.MATRIX_SIZE
 		
 		currentOffset = reMesh.skeletonHeader.boneInverseMatrixOffset + reMesh.skeletonHeader.boneCount * sd.MATRIX_SIZE
+	# Wilds blend metadata is derived from the parsed Blender shape keys. The
+	# focused helper owns only the Wilds-specific table and payload layout.
+	blendShapePlan = None
+	if version == VERSION_MHWILDS:
+		from .mhwilds_blendshape import build_blend_shape_plan
+		blendShapePlan = build_blend_shape_plan(
+			parsedMesh, parsedSubMeshToSubMeshDataDict
+		)
+		if blendShapePlan is not None:
+			from .mhwilds_blendshape import (
+				relocate_blend_shape_header,
+				reserve_normal_recalc_marker,
+			)
+			currentOffset = reserve_normal_recalc_marker(
+				reMesh, currentOffset
+			)
+			reMesh.fileHeader.blendShapesOffset = currentOffset
+			reMesh.blendShapeHeader = blendShapePlan["header"]
+			currentOffset = relocate_blend_shape_header(
+				reMesh.blendShapeHeader, currentOffset, version
+			)
+			reMesh._blendShapeExportPlan = blendShapePlan
 	#Name lists and remaps
 	currentNameIndex = 0
 	for index,materialName in enumerate(parsedMesh.materialNameList):
@@ -2274,13 +2383,23 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 			reMesh.rawNameList.append(bone.boneName)
 			reMesh.boneNameRemapList.append(currentNameIndex)
 			currentNameIndex += 1
-	#TODO Blend Shape Names Remap
+	if blendShapePlan is not None:
+		for shapeName in blendShapePlan["shapeRemapNames"]:
+			reMesh.rawNameList.append(shapeName)
+			reMesh.blendShapeNameRemapList.append(currentNameIndex)
+			currentNameIndex += 1
 	
 	reMesh.fileHeader.materialNameRemapOffset = currentOffset
 	currentOffset = getPaddedPos(currentOffset + (len(reMesh.materialNameRemapList)*2), 16)
 	if parsedMesh.skeleton != None:
 		reMesh.fileHeader.boneNameRemapOffset = currentOffset
 		currentOffset = getPaddedPos(currentOffset + (len(reMesh.boneNameRemapList)*2), 16)
+	if blendShapePlan is not None:
+		reMesh.fileHeader.blendShapeNameOffset = currentOffset
+		currentOffset = getPaddedPos(
+			currentOffset + len(reMesh.blendShapeNameRemapList) * 2,
+			16,
+		)
 	
 	reMesh.fileHeader.nameOffsetsOffset = currentOffset
 	currentOffset = getPaddedPos(currentOffset + (len(reMesh.rawNameList)*8), 16)#Get the position after all string offsets
@@ -2427,7 +2546,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	extraWeightBuffer.close()
 	faceBuffer.close()
 	secondaryWeightBuffer.close()
-				
+	if version == VERSION_MHWILDS and blendShapePlan is not None:
+		from .mhwilds_blendshape import finalize_mhwilds_export
+		finalize_mhwilds_export(parsedMesh, reMesh)
 	return reMesh
 #---RE MESH IO FUNCTIONS---#
 
@@ -2482,6 +2603,21 @@ def readREMesh(filepath,lodTarget = None):
 	file.close()
 	return reMeshFile
 def writeREMesh(reMeshFile,filepath):
+	# Dispatch custom blendshape writers by generic handler key. Monster Hunter
+	# Wilds is currently the only registered implementation.
+	blendShapeWriter = getattr(reMeshFile, "_blendShapeWriter", None)
+	if blendShapeWriter is not None:
+		try:
+			meshVersion = int(os.path.splitext(filepath)[1].replace(".",""))
+		except:
+			meshVersion = 0
+		if blendShapeWriter == "MHWILDS" and meshVersion == 241111606:
+			from .mhwilds_blendshape import write_mhwilds_mesh
+			return write_mhwilds_mesh(reMeshFile, filepath)
+		raise RuntimeError(
+			f"No blendshape writer registered for {blendShapeWriter} "
+			f"and mesh version {meshVersion}"
+		)
 	print("Writing to " + filepath)
 	try:
 		file = open(filepath,"wb",buffering=8192)
@@ -2496,4 +2632,3 @@ def writeREMesh(reMeshFile,filepath):
 	reMeshFile.meshVersion = meshVersion
 	reMeshFile.write(file,version)
 	file.close()
-

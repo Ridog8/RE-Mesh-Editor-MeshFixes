@@ -20,7 +20,7 @@ from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
 from itertools import chain, repeat, islice
 from .file_re_mesh import readREMesh,writeREMesh,ParsedREMeshToREMesh,Sphere,AABB,Matrix4x4,meshFileVersionToGameNameDict
-from .re_mesh_parse import ParsedREMesh,VisconGroup,LODLevel,SubMesh,ParsedBone,Skeleton
+from .re_mesh_parse import ParsedREMesh,VisconGroup,LODLevel,SubMesh,ParsedBone,Skeleton,BlendShape
 from ..mdf.file_re_mdf import readMDF
 from ..mdf.blender_re_mesh_mdf import findMDFPathFromMeshPath,importMDF
 from ..mdf.blender_re_mdf import importMDFFile
@@ -63,6 +63,166 @@ def normalize(lst):
 		return lst
 def normalizeVec(vec):
     return Vector(vec).normalized()
+
+BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS",))
+DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
+
+
+def _game_supports_blend_shapes(gameName):
+	return str(gameName) in BLEND_SHAPE_EXPORT_GAMES
+
+
+def _get_export_shape_keys(meshData):
+	if meshData.shape_keys is None:
+		return (None, [])
+	keyBlocks = meshData.shape_keys.key_blocks
+	if len(keyBlocks) <= 1:
+		return (None, [])
+	basis = keyBlocks.get("Basis") or keyBlocks[0]
+	shapeKeys = [
+		key for key in keyBlocks
+		if key != basis
+		and not str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
+	]
+	skippedDummyKeys = [
+		str(key.name) for key in keyBlocks
+		if key != basis
+		and str(key.name).startswith(DUMMY_SHAPEKEY_PREFIX)
+	]
+	if skippedDummyKeys:
+		print(
+			"Skipped DUMMY_ shape keys during blendshape export: "
+			+ ", ".join(skippedDummyKeys)
+		)
+	return (basis, shapeKeys)
+
+def _temporarily_zero_shape_key_values(obj):
+	if obj.data is None or obj.data.shape_keys is None:
+		return []
+	stored = []
+	for key in obj.data.shape_keys.key_blocks:
+		stored.append((key, key.value))
+		if key.name != "Basis":
+			key.value = 0.0
+	return stored
+
+def _restore_shape_key_values(storedValues):
+	for key, value in storedValues:
+		key.value = value
+
+def _build_blend_shape_entries_for_export(
+	rawsubmesh,
+	sourceVertexIndexList,
+	transformMatrix,
+	gameName,
+	evaluatedBasisMesh,
+	exportShapeKeys=True,
+):
+	"""Evaluate each Blender key through the same geometry path as the basis."""
+	if (
+		not _game_supports_blend_shapes(gameName)
+		or evaluatedBasisMesh is None
+		or not exportShapeKeys
+	):
+		return []
+	basis, shapeKeys = _get_export_shape_keys(rawsubmesh.data)
+	if basis is None or not shapeKeys:
+		return []
+	stored = _temporarily_zero_shape_key_values(rawsubmesh)
+	result = []
+	try:
+		rawsubmesh.data.update()
+		bpy.context.view_layer.update()
+		basisCoordinates = [
+			vertex.co.copy() for vertex in evaluatedBasisMesh.vertices
+		]
+		depsgraph = bpy.context.evaluated_depsgraph_get()
+		rawBasisMesh = bpy.data.meshes.new_from_object(
+			rawsubmesh.evaluated_get(depsgraph)
+		)
+		if any(
+			len(face.vertices) != 3 for face in rawBasisMesh.polygons
+		):
+			triangulateMesh(rawBasisMesh)
+		rawBasisMesh.transform(transformMatrix)
+
+		def positionKey(coordinate):
+			return (
+				round(float(coordinate.x), 6),
+				round(float(coordinate.y), 6),
+				round(float(coordinate.z), 6),
+			)
+
+		positionToRawIndices = {}
+		for rawIndex, vertex in enumerate(rawBasisMesh.vertices):
+			positionToRawIndices.setdefault(
+				positionKey(vertex.co), []
+			).append(rawIndex)
+		mappedSourceIndices = []
+		for sourceIndex in sourceVertexIndexList:
+			sourceIndex = int(sourceIndex)
+			if 0 <= sourceIndex < len(basisCoordinates):
+				candidates = positionToRawIndices.get(
+					positionKey(basisCoordinates[sourceIndex]), []
+				)
+				if sourceIndex in candidates:
+					mappedSourceIndices.append(sourceIndex)
+				elif candidates:
+					mappedSourceIndices.append(candidates[0])
+				else:
+					mappedSourceIndices.append(-1)
+			else:
+				mappedSourceIndices.append(-1)
+		for shapeKey in shapeKeys:
+			for key in rawsubmesh.data.shape_keys.key_blocks:
+				if key.name != "Basis":
+					key.value = 0.0
+			shapeKey.value = 1.0
+			rawsubmesh.data.update()
+			bpy.context.view_layer.update()
+			depsgraph = bpy.context.evaluated_depsgraph_get()
+			shapeMesh = bpy.data.meshes.new_from_object(
+				rawsubmesh.evaluated_get(depsgraph)
+			)
+			try:
+				if any(
+					len(face.vertices) != 3
+					for face in shapeMesh.polygons
+				):
+					triangulateMesh(shapeMesh)
+				shapeMesh.transform(transformMatrix)
+				deltas = []
+				for rowIndex, sourceIndex in enumerate(
+					sourceVertexIndexList
+				):
+					sourceIndex = int(sourceIndex)
+					mappedIndex = mappedSourceIndices[rowIndex]
+					if (
+						0 <= mappedIndex < len(shapeMesh.vertices)
+						and mappedIndex < len(rawBasisMesh.vertices)
+					):
+						delta = (
+							shapeMesh.vertices[mappedIndex].co
+							- rawBasisMesh.vertices[mappedIndex].co
+						)
+						deltas.append(
+							(float(delta.x), float(delta.y), float(delta.z))
+						)
+					else:
+						deltas.append((0.0, 0.0, 0.0))
+			finally:
+				bpy.data.meshes.remove(shapeMesh)
+			entry = BlendShape()
+			entry.blendShapeName = shapeKey.name
+			entry.deltas = np.asarray(deltas, dtype=np.float32)
+			result.append(entry)
+	finally:
+		if "rawBasisMesh" in locals():
+			bpy.data.meshes.remove(rawBasisMesh)
+		_restore_shape_key_values(stored)
+		rawsubmesh.data.update()
+		bpy.context.view_layer.update()
+	return result
 def dist(a, b) -> float:
     return  ((a[0] - b[0])**2 + (a[1] - b[1])**2 + (a[2] - b[2])**2)**0.5
 def bounding_sphere_ritter(points):
@@ -263,7 +423,49 @@ def importSkeleton(parsedSkeleton,armatureName,collection,rotate90,targetArmatur
 
 IMPORT_EXTRA_WEIGHTS = True
 
-def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalList = [],vertexColor0List = [],vertexColor1List = [],UV0List = [],UV1List = [],UV2List = [],boneNameList = [],vertexGroupWeightList = [],vertexGroupBoneIndicesList = [],extraVertexGroupWeightList = [],extraVertexGroupBoneIndicesList = [],vertexGroupWeightListSecondary = [],vertexGroupBoneIndicesListSecondary = [],boneNameRemapList = [],material="Material",armature = None,collection = None,rotate90 = True,blendShapeList = []):
+MHWILDS_NORMAL_GROUP_ATTRIBUTE = "MHWILDS_NormalGroup"
+MHWILDS_NORMAL_PIVOT_ATTRIBUTE = "MHWILDS_NormalPivot"
+MHWILDS_NORMAL_PIVOT0_ATTRIBUTE = "MHWILDS_NormalPivot0"
+MHWILDS_NORMAL_PIVOT255_ATTRIBUTE = "MHWILDS_NormalPivot255"
+
+def _mhwilds_create_point_int_attribute(meshData, attributeName, values):
+	values = [] if values is None else list(values)
+	if len(values) != len(meshData.vertices):
+		return False
+	attribute = meshData.attributes.get(attributeName)
+	if attribute is None:
+		attribute = meshData.attributes.new(
+			name=attributeName, type="INT", domain="POINT"
+		)
+	if attribute.domain != "POINT" or attribute.data_type != "INT":
+		raise RuntimeError(
+			f"{attributeName} must be a point-domain integer attribute"
+		)
+	for index, value in enumerate(values):
+		attribute.data[index].value = int(value)
+	return True
+
+def _mhwilds_read_point_int_attribute(
+	meshData, attributeName, sourceVertexIndices
+):
+	attribute = meshData.attributes.get(attributeName)
+	if attribute is None:
+		return []
+	if attribute.domain != "POINT" or attribute.data_type != "INT":
+		raise RuntimeError(
+			f"{attributeName} must be a point-domain integer attribute"
+		)
+	result = []
+	for sourceIndex in sourceVertexIndices:
+		sourceIndex = int(sourceIndex)
+		if sourceIndex < 0 or sourceIndex >= len(attribute.data):
+			raise RuntimeError(
+				f"{attributeName} vertex {sourceIndex} is out of range"
+			)
+		result.append(int(attribute.data[sourceIndex].value))
+	return result
+
+def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalList = [],vertexColor0List = [],vertexColor1List = [],UV0List = [],UV1List = [],UV2List = [],boneNameList = [],vertexGroupWeightList = [],vertexGroupBoneIndicesList = [],extraVertexGroupWeightList = [],extraVertexGroupBoneIndicesList = [],vertexGroupWeightListSecondary = [],vertexGroupBoneIndicesListSecondary = [],boneNameRemapList = [],material="Material",armature = None,collection = None,rotate90 = True,blendShapeList = [],importBlendShapes = False,normalGroupList = [],normalPivotGroupList = [],normalPivot0List = [],normalPivot255List = []):
 	#print(f"\n{meshName}, Vertex Count: {len(vertexList)}, Face Count: {len(faceList)}\n")
 	#print(vertexList)
 	#print()
@@ -287,6 +489,18 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 	if faceList == []:
 		raise Exception("Invalid mesh, submesh has no faces")
 	meshData.from_pydata(vertexList, [], faceList)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_GROUP_ATTRIBUTE, normalGroupList
+	)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_PIVOT_ATTRIBUTE, normalPivotGroupList
+	)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_PIVOT0_ATTRIBUTE, normalPivot0List
+	)
+	_mhwilds_create_point_int_attribute(
+		meshData, MHWILDS_NORMAL_PIVOT255_ATTRIBUTE, normalPivot255List
+	)
 	#print(f"DEBUG:\t Loaded {len(vertexList)} verts and {len(faceList)} faces")
 	#Import UV Layers
 	UVLayerList = (UV0List,UV1List,UV2List)
@@ -424,28 +638,32 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 		bpy.context.scene.collection.objects.link(meshObj)
 	
 	#Import Blend Shapes
-	if blendShapeList != []:
+	if importBlendShapes and blendShapeList != []:
 		skB = meshObj.shape_key_add(name = "Basis")
 		skB.interpolation = 'KEY_LINEAR'
-		print(meshObj.name)
+		skB.value = 0.0
 		
 		for blendShapeEntry in blendShapeList:
-				name = blendShapeEntry.blendShapeName
-				print(name)
-				#print(blendShapeEntry.deltas)
-				deltas = [Vector (val) for val in blendShapeEntry.deltas]
-				#print(deltas)
-				sk = meshObj.shape_key_add(name = name)
-				sk.interpolation = 'KEY_LINEAR'
-				print(f"mesh vertices: {len(meshObj.data.vertices)}")
-				print(f"delta vertices: {len(deltas)}")
-				#if len(deltas) == len(meshObj.data.vertices):
-				for i in range(len(meshObj.data.vertices)):
-					sk.data[i].co = meshObj.data.vertices[i].co + deltas[i]
+			name = blendShapeEntry.blendShapeName
+			deltas = [Vector(val) for val in blendShapeEntry.deltas]
+			sk = meshObj.shape_key_add(name = name)
+			sk.interpolation = 'KEY_LINEAR'
+			sk.value = 0.0
+			sk.slider_min = 0.0
+			sk.slider_max = 1.0
+			for i in range(len(meshObj.data.vertices)):
+				delta = (
+					deltas[i]
+					if i < len(deltas)
+					else Vector((0.0, 0.0, 0.0))
+				)
+				if rotate90:
+					delta = rotate90Matrix.to_3x3() @ delta
+				sk.data[i].co = meshObj.data.vertices[i].co + delta
 	
 	return meshObj
 
-def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,hiddenCollectionSet,meshOffsetDict,importAllLODs = False,createCollections = True,importShadowMeshes = False,rotate90 = True,mergeGroups = False,importBoundingBoxes = False):
+def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,hiddenCollectionSet,meshOffsetDict,importAllLODs = False,createCollections = True,importShadowMeshes = False,rotate90 = True,mergeGroups = False,importBoundingBoxes = False,gameName = "",importBlendShapes = False):
 	
 	if meshType == "Main Mesh":
 		shortName = "Main"
@@ -480,6 +698,20 @@ def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,h
 		if createCollections and importAllLODs:
 			lodCollection = getCollection(f"{meshType} LOD{str(lodIndex)}{shadowLODString} - {meshCollection.name}",meshCollection,makeNew = True)
 			lodCollection["LOD Distance"] = lod.lodDistance
+			if gameName == "MHWILDS":
+				profileValues = getattr(
+					parsedMesh,
+					"mhwildsCanonicalTableProfile",
+					None,
+				)
+				profile = (
+					[] if profileValues is None else list(profileValues)
+				)
+				lodCollection["MHWILDS Use Canonical Tables"] = (
+					bool(profile[lodIndex])
+					if lodIndex < len(profile)
+					else True
+				)
 		else:
 			lodCollection = meshCollection
 		if not firstLOD and createCollections:
@@ -525,7 +757,12 @@ def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,h
 						armature=armatureObj,
 						collection=lodCollection,
 						rotate90 = rotate90,
-						blendShapeList = subMesh.blendShapeList
+						blendShapeList = subMesh.blendShapeList,
+						importBlendShapes = importBlendShapes,
+						normalGroupList = subMesh.normalGroupList,
+						normalPivotGroupList = subMesh.normalPivotGroupList,
+						normalPivot0List = subMesh.normalPivot0List,
+						normalPivot255List = subMesh.normalPivot255List,
 						)
 					if parsedMesh.isMPLY:
 						meshObj.parent = MPLYRoot
@@ -679,9 +916,17 @@ def importREMeshFile(filePath,options):
 		lodTarget = 0
 	reMesh = readREMesh(filePath,lodTarget)
 	meshFileName = os.path.splitext(os.path.split(filePath)[1])[0]
+	gameName = meshFileVersionToGameNameDict.get(reMesh.meshVersion, "")
+	importBlendShapes = (
+		_game_supports_blend_shapes(gameName)
+		and bool(options.get("importBlendShapes", True))
+	)
 	meshParseStartTime = time.time()
 	parsedMesh = ParsedREMesh()
-	parsedMesh.ParseREMesh(reMesh)
+	parsedMesh.ParseREMesh(
+		reMesh,
+		{"importBlendShapes": importBlendShapes},
+	)
 	print("Parsed mesh.")
 	meshParseEndTime = time.time()
 	meshParseTime =  meshParseEndTime - meshParseStartTime
@@ -717,7 +962,23 @@ def importREMeshFile(filePath,options):
 	
 	if not options["importArmatureOnly"]:
 		#print("DEBUG: Importing main mesh")
-		importLODGroup(parsedMesh,"Main Mesh",meshCollection,materialDict,armatureObj,hiddenCollectionSet,meshOffsetDict,options["importAllLODs"],options["createCollections"],options["importShadowMeshes"],options["rotate90"],options["mergeGroups"],options["importBoundingBoxes"])
+		importLODGroup(
+			parsedMesh,
+			"Main Mesh",
+			meshCollection,
+			materialDict,
+			armatureObj,
+			hiddenCollectionSet,
+			meshOffsetDict,
+			options["importAllLODs"],
+			options["createCollections"],
+			options["importShadowMeshes"],
+			options["rotate90"],
+			options["mergeGroups"],
+			options["importBoundingBoxes"],
+			gameName,
+			importBlendShapes,
+		)
 		#print("DEBUG: Finished importing main mesh")
 	"""
 	if options["importShadowMeshes"] and parsedMesh.shadowMeshLODList != []:
@@ -1047,6 +1308,18 @@ def exportREMeshFile(filePath,options):
 	parsedMesh = ParsedREMesh()
 	parsedMesh.boundingBox = None
 	parsedMesh.boundingSphere = None
+	blendShapeExportEnabled = (
+		_game_supports_blend_shapes(gameName)
+		and bool(options.get("exportBlendShapes", False))
+	)
+	if gameName == "MHWILDS":
+		from .mhwilds_blendshape import set_export_mode
+		selectedBlendShapeMode = int(options.get("blendShapeExportMode", 0))
+		set_export_mode(parsedMesh, selectedBlendShapeMode)
+		print(
+			f"Blendshape export mode: {selectedBlendShapeMode}; "
+			f"exportShapeKeys={blendShapeExportEnabled}"
+		)
 	newMeshDataList = []
 	vertexGroupsSet = set()
 	weightedBonesSet = set()
@@ -1243,6 +1516,47 @@ def exportREMeshFile(filePath,options):
 	meshLODCollectionList.sort(key=lambda col: col.name)
 	if not options["exportAllLODs"]:
 		meshLODCollectionList = [meshLODCollectionList[0]]
+	if gameName == "MHWILDS":
+		parsedMesh.mhwildsCanonicalTableProfile = [
+			bool(collection.get("MHWILDS Use Canonical Tables", True))
+			for collection in meshLODCollectionList
+		]
+		sharedLODMap = {}
+		collectionObjectSets = []
+		for collection in meshLODCollectionList:
+			objects = frozenset(
+				obj
+				for obj in collection.objects
+				if (
+					obj.type == "MESH"
+					and not obj.get("MeshExportExclude")
+					and (
+						not options["selectedOnly"]
+						or obj in bpy.context.selected_objects
+					)
+				)
+			)
+			collectionObjectSets.append(objects)
+		for targetIndex, targetObjects in enumerate(collectionObjectSets):
+			if targetIndex == len(collectionObjectSets) - 1:
+				continue
+			targetDistance = meshLODCollectionList[targetIndex].get(
+				"LOD Distance"
+			)
+			for sourceIndex in range(targetIndex):
+				sourceDistance = meshLODCollectionList[sourceIndex].get(
+					"LOD Distance"
+				)
+				if (
+					targetObjects
+					and targetObjects == collectionObjectSets[sourceIndex]
+					and targetDistance is not None
+					and sourceDistance is not None
+					and float(targetDistance) == float(sourceDistance)
+				):
+					sharedLODMap[targetIndex] = sourceIndex
+					break
+		parsedMesh._blendShapeSharedLODMap = sharedLODMap
 	#Loop through all lod collections, or the scene collection if there is no collections
 	meshDataStartTime = time.time()
 	isFirstLOD = True
@@ -1275,7 +1589,24 @@ def exportREMeshFile(filePath,options):
 				#Get copy of sub mesh with modifiers applied
 				#Creates copy of object so that solve repeated uvs and sharp edge splitting can be done and not affect the original mesh
 				cloneObj.name ="CLN_" + obj.name
-				cloneObj.data = bpy.data.meshes.new_from_object(obj.evaluated_get(dg))
+				# Wilds blendshape export needs an undeformed Basis clone. Other games
+				# retain the original RE Mesh Editor evaluated-clone behavior exactly.
+				if _game_supports_blend_shapes(gameName):
+					storedShapeValues = _temporarily_zero_shape_key_values(obj)
+					try:
+						obj.data.update()
+						bpy.context.view_layer.update()
+						cloneObj.data = bpy.data.meshes.new_from_object(
+							obj.evaluated_get(dg)
+						)
+					finally:
+						_restore_shape_key_values(storedShapeValues)
+						obj.data.update()
+						bpy.context.view_layer.update()
+				else:
+					cloneObj.data = bpy.data.meshes.new_from_object(
+						obj.evaluated_get(dg)
+					)
 				clonedMeshCollection = getCollection("clonedMeshes")
 				clonedMeshCollection.objects.link(cloneObj)
 				
@@ -1604,6 +1935,7 @@ def exportREMeshFile(filePath,options):
 					outSecondaryWeightIndices = []
 
 					outFaces = []
+					outSourceVertexIndices = []
 					usedOriginalVertexIndices = set()
 
 					for poly in evaluatedSubMeshData.polygons:
@@ -1640,6 +1972,7 @@ def exportREMeshFile(filePath,options):
 								outPositions.append(tuple(vertex.co))
 								outNormals.append(tuple(normal))
 								outTangents.append(tangentPacked)
+								outSourceVertexIndices.append(srcVertIndex)
 
 								if meshHasUV:
 									outUV0.append(tuple(uv0))
@@ -1734,6 +2067,7 @@ def exportREMeshFile(filePath,options):
 				else:
 					# Condition branch for 'legacy' handling. 1:1 vertex export from Blender.
 					legacyVertexCount = len(evaluatedSubMeshData.vertices)
+					outSourceVertexIndices = list(range(legacyVertexCount))
 
 					parsedSubMesh.vertexPosList = np.zeros((legacyVertexCount, 3), dtype=np.float32)
 					parsedSubMesh.normalList = np.zeros((legacyVertexCount, 3), dtype=np.float32)
@@ -1853,6 +2187,56 @@ def exportREMeshFile(filePath,options):
 						f"{legacyVertexCount} exported vertices"
 					)
 
+				# Preserve generic source-row provenance from the CURRENT evaluated
+				# Blender mesh. Game-specific blendshape handlers may use this to
+				# recognize rows created by loop/attribute splitting.
+				parsedSubMesh.blendShapeSourceVertexIndexList = [
+					int(value) for value in outSourceVertexIndices
+				]
+				parsedSubMesh.blendShapeSourceVertexCount = int(
+					len(evaluatedSubMeshData.vertices)
+				)
+				parsedSubMesh.blendShapeSplitLoopVertices = bool(splitLoopVertices)
+
+				parsedSubMesh.blendShapeList = (
+					_build_blend_shape_entries_for_export(
+						rawsubmesh,
+						outSourceVertexIndices,
+						subMeshWorldMatrix,
+						gameName,
+						evaluatedSubMeshData,
+						exportShapeKeys=blendShapeExportEnabled,
+					)
+				)
+				if gameName == "MHWILDS":
+					parsedSubMesh.normalGroupList = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_GROUP_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
+					parsedSubMesh.normalPivotGroupList = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_PIVOT_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
+					parsedSubMesh.normalPivot0List = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_PIVOT0_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
+					parsedSubMesh.normalPivot255List = (
+						_mhwilds_read_point_int_attribute(
+							evaluatedSubMeshData,
+							MHWILDS_NORMAL_PIVOT255_ATTRIBUTE,
+							outSourceVertexIndices,
+						)
+					)
 				visconGroup.subMeshList.append(parsedSubMesh)
 				
 				#End submesh

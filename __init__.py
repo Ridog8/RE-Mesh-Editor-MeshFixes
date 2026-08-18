@@ -2,7 +2,7 @@
 bl_info = {
 	"name": "RE Mesh Editor",
 	"author": "NSA Cloud, Forked by Ridog8",
-	"version": (0, 67),
+	"version": (0, 68),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
@@ -985,6 +985,28 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "Export Blend Shapes",
 	   description = "Exports blend shapes from mesh if present",
 	   default = True)
+	shapeKeyExportMode : EnumProperty(
+		name = "Export Shapekeys?",
+		description = "Choose whether and how Blender shape keys are exported as blendshapes",
+		items = [
+			(
+				"NO",
+				"No",
+				"Do not export Blender shape keys or Wilds blendshape data. Alternatevly, if exporting shapekeys, you can use the prefix 'DUMMY_' for shapekey names to exclude export of them"
+			),
+			(
+				"MODE0",
+				"Mode 0",
+				"This keeps shading 1:1 between having or not having blendshapes at all. But may introduce bad shading depending on the runtime settings of the mesh. This is recommended for script mods to take advantage of if they are custom meshes or heavily edited vanilla meshes."
+			),
+			(
+				"MODE1",
+				"Mode 1",
+				"This behaves more so like vanilla meshes, just by having blendshapes (wether geometry is moved or not) shading is slightly different between not having them at all. Recommended for retaining vanilla data. "
+			),
+		],
+		default = "MODE0"
+	)
 	rotate90 : BoolProperty(
 	   name = "Convert Z Up To Y Up",
 	   description = "Rotates objects 90 degrees for export. Leaving this option enabled is recommended",
@@ -1091,6 +1113,9 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "selectedOnly")
 		layout.label(text = "Advanced Options")
 		layout.prop(self, "exportAllLODs")
+		# Shape-key export selector is currently shown only for Wilds. Enum item descriptions are used by
+		# Blender as the per-choice hover tooltip in the drop-down.
+		
 		#layout.prop(self, "exportBlendShapes")
 		#hasREToolbox = hasattr(bpy.types, "OBJECT_PT_re_tools_quick_export_panel")
 		row = layout.row()
@@ -1103,7 +1128,11 @@ class ExportREMesh(Operator, ExportHelper):
 		row3.prop(self,"splitLoopVertices")
 		row4 = layout.row()
 		row4.prop(self,"normalizeWeights")
-		
+		if self.filename_ext == ".241111606":
+					row = layout.row()
+					split = row.split(factor=0.48)
+					split.label(text="Export Shapekeys?")
+					split.prop(self, "shapeKeyExportMode", text="")
 
 		layout.prop(self, "rotate90")
 		layout.prop(self, "useBlenderMaterialName")
@@ -1111,16 +1140,42 @@ class ExportREMesh(Operator, ExportHelper):
 		layout.prop(self, "exportBoundingBoxes")
 	
 	def execute(self, context):
-		options = {"targetCollection":self.targetCollection,"selectedOnly":self.selectedOnly,"exportAllLODs":self.exportAllLODs,"exportBlendShapes":self.exportBlendShapes,"rotate90":self.rotate90,"useBlenderMaterialName":self.useBlenderMaterialName,"preserveBoneMatrices":self.preserveBoneMatrices,"exportBoundingBoxes":self.exportBoundingBoxes,"autoSolveRepeatedUVs":self.autoSolveRepeatedUVs,"preserveSharpEdges":self.preserveSharpEdges,"splitLoopVertices":self.splitLoopVertices,"normalizeWeights":self.normalizeWeights}
 		try:
 			meshVersion = int(os.path.splitext(self.filepath)[1].replace(".",""))
 		except:
 			self.report({"INFO"},"Mesh file path is missing number extension. Cannot export.")
 			return{"CANCELLED"}
+
+		# Blendshape export is currently implemented only for Monster Hunter Wilds.
+		# Keep the UI/property vocabulary generic so other game handlers can be
+		# added later without renaming the shared export plumbing.
+		shapeKeyExportSelection = self.shapeKeyExportMode
+		if meshVersion == 241111606:
+			exportBlendShapes = shapeKeyExportSelection != "NO"
+			blendShapeExportMode = 0 if shapeKeyExportSelection == "MODE0" else 1
+		else:
+			exportBlendShapes = False
+			blendShapeExportMode = 0
+
+		options = {
+			"targetCollection": self.targetCollection,
+			"selectedOnly": self.selectedOnly,
+			"exportAllLODs": self.exportAllLODs,
+			"exportBlendShapes": exportBlendShapes,
+			"blendShapeExportMode": blendShapeExportMode,
+			"rotate90": self.rotate90,
+			"useBlenderMaterialName": self.useBlenderMaterialName,
+			"preserveBoneMatrices": self.preserveBoneMatrices,
+			"exportBoundingBoxes": self.exportBoundingBoxes,
+			"autoSolveRepeatedUVs": self.autoSolveRepeatedUVs,
+			"preserveSharpEdges": self.preserveSharpEdges,
+			"splitLoopVertices": self.splitLoopVertices,
+			"normalizeWeights": self.normalizeWeights,
+		}
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
 		print(f"Blender Version {bpy.app.version[0]}.{bpy.app.version[1]}.{bpy.app.version[2]}")
-		print("https://github.com/NSACloud/RE-Mesh-Editor")
+		print("https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes")
 		
 		bpy.context.scene["REMeshDefaultExportSettingsLoaded"] = 1
 		
