@@ -273,6 +273,30 @@ def ReadVertexElementBuffers(vertexElementList,vertexBuffer,tagSet):
 			importedElementsSet.add(elementName)
 		elif "shadowLOD" in tagSet:
 			vertexDict[elementName] = BufferReadDict[elementName](vertexBuffer[vertexElement.posStartOffset:bufferEnd],tagSet)
+
+	if "ONIWOTS" in tagSet and "SixWeightCompressed" in tagSet and vertexDict["Weight"] is not None:
+		primaryIndices, primaryWeights = vertexDict["Weight"]
+		if vertexDict["ExtraWeight"] is not None:
+			extraIndices, extraWeights = vertexDict["ExtraWeight"]
+			rowCount = min(len(primaryWeights), len(extraWeights))
+			semanticPrimaryWeights = []
+			semanticExtraWeights = []
+			for rowIndex in range(rowCount):
+				primaryRow = primaryWeights[rowIndex]
+				extraRow = extraWeights[rowIndex]
+				semanticPrimaryWeights.append(list(primaryRow[:6]) + [0.0, 0.0])
+				semanticExtraWeights.append([
+					primaryRow[6], primaryRow[7],
+					extraRow[0], extraRow[1], extraRow[2], extraRow[3],
+					0.0, 0.0,
+				])
+			vertexDict["Weight"] = (primaryIndices, semanticPrimaryWeights)
+			vertexDict["ExtraWeight"] = (extraIndices, semanticExtraWeights)
+		else:
+			vertexDict["Weight"] = (
+				primaryIndices,
+				[list(row[:6]) + [0.0, 0.0] for row in primaryWeights],
+			)
 	return vertexDict
 
 class VisconGroup:
@@ -1024,6 +1048,8 @@ class ParsedREMesh:
 			tags = set()
 			if reMesh.meshVersion in SIX_WEIGHT_MESH_VERSIONS or reMesh.fileHeader.version == 250707828:#Street Fighter 6 mesh version + MH Wilds, #Pragmata internal mesh version uses 6 weight but RE9 uses 8
 				tags.add("SixWeightCompressed")#Add tag to parse compressed weights
+			if reMesh.meshVersion == VERSION_ONIWOTS:
+				tags.add("ONIWOTS")
 			if reMesh.meshVersion in BLEND_SHAPE_MESH_VERSIONS:
 				tags.add("MHWILDS")
 			#if duplicate in vertexelementlist, add shadowLOD tag

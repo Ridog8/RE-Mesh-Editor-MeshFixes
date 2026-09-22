@@ -1306,9 +1306,16 @@ def exportREMeshFile(filePath,options):
 	if bpy.context and bpy.context.active_object != None:
 		bpy.ops.object.mode_set(mode='OBJECT')
 	
-	maxWeightsPerVertex, maxWeightsPerVertexExtended, maxWeightedBones = getMeshWeightLimits(gameName)
-	EXTENDED_WEIGHT_GAMES = EXTENDED_WEIGHT_GAME_NAMES
-	padWithLastWeightIndex = True if gameName in {"PRAG", "MHS3", "ONIWOTS", "RE9"} else False
+	maxWeightsPerVertex = 8
+	maxWeightsPerVertexExtended = 16
+	maxWeightedBones = 256
+	SIX_WEIGHT_GAMES = set(["SF6","MHWILDS","PRAG","MHS3","ONIWOTS"])
+	EXTENDED_WEIGHT_GAMES = set(["MHWILDS","PRAG","MHS3","ONIWOTS",])#Games with support for extended weight buffers
+	if gameName in SIX_WEIGHT_GAMES:
+		maxWeightsPerVertex = 6
+		maxWeightsPerVertexExtended = 12
+		maxWeightedBones = 1024
+	padWithLastWeightIndex = True if gameName == "PRAG" or gameName == "MHS3" or gameName == "ONIWOTS" or gameName == "RE9" else False
 	errorInfoDict["ExtendedMaxWeightsPerVertexExceeded"] = f"""Extended Max Weights Per Vertex Exceeded On Sub Mesh
 A vertex has more the maximum of {maxWeightsPerVertexExtended} weights assigned to it.
 
@@ -1923,21 +1930,21 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
 
 					if len(weightList) > maxWeightsPerVertex:
+						parsedMesh.bufferHasExtraWeight = True
+
 						if gameName not in EXTENDED_WEIGHT_GAMES:
 							addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
-						else:
-							parsedMesh.bufferHasExtraWeight = True
 
-							extraWeightList = list(
-								pad(weightList[maxWeightsPerVertex:], size=8, padding=0.0)
-							)
+						extraWeightList = list(
+							pad(weightList[maxWeightsPerVertex:], size=8, padding=0.0)
+						)
 
-							extraWeightIndicesList = list(
-								pad(weightIndicesList[maxWeightsPerVertex:], size=8, padding=paddingValue)
-							)
+						extraWeightIndicesList = list(
+							pad(weightIndicesList[maxWeightsPerVertex:], size=8, padding=paddingValue)
+						)
 
-							if len(weightList) > maxWeightsPerVertexExtended:
-								addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
+						if len(weightList) > maxWeightsPerVertexExtended:
+							addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
 
 					if len(secondaryWeightList) > maxWeightsPerVertex:
 						addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)

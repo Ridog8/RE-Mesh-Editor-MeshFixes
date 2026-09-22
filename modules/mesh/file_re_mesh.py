@@ -1947,10 +1947,14 @@ def PackSixWeightIndices(boneIndicesList):
 	return packed.astype("<u8", copy=False).reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
 
 
-def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight=False,normalizeWeights=True):
+def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight=False,normalizeWeights=True,version=None):
 	
 	if isSixWeight:
 		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
+		if version == VERSION_ONIWOTS and len(boneIndicesArray) != 0:
+			packed = boneIndicesArray.copy().view("<u8").reshape((-1))
+			packed |= (np.uint64(3) << np.uint64(30)) | (np.uint64(3) << np.uint64(62))
+			boneIndicesArray = packed.reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
 	else:
 		boneIndicesArray = boneIndicesList.astype("<B")
 	
@@ -1970,21 +1974,31 @@ def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight
 	#print(weightArray)
 	bufferStream.write(weightArray.tobytes())
 
-def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,extraBufferStream,extraBoneWeightsList,extraBoneIndicesList,isSixWeight=False,normalizeWeights=True):
+
+def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,extraBufferStream,extraBoneWeightsList,extraBoneIndicesList,isSixWeight=False,normalizeWeights=True,version=None):
 	
 	if isSixWeight:
 		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
 		extraBoneIndicesArray = PackSixWeightIndices(extraBoneIndicesList)
+		if version == VERSION_ONIWOTS and len(boneIndicesArray) != 0:
+			packed = boneIndicesArray.copy().view("<u8").reshape((-1))
+			packed |= (np.uint64(3) << np.uint64(30)) | (np.uint64(3) << np.uint64(62))
+			boneIndicesArray = packed.reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
 	else:
 		boneIndicesArray = boneIndicesList.astype("<B")
 		extraBoneIndicesArray = extraBoneIndicesList.astype("<B")
 	
 	
 	
-	boneWeightsArray = np.array(boneWeightsList)
-	#Combine extra weights with first set so that they are normalized and quantized together
-	boneWeightsArray = np.hstack((boneWeightsArray,np.array(extraBoneWeightsList)))
-	boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
+	if version == VERSION_ONIWOTS:
+		boneWeightsArray = np.asarray(boneWeightsList, dtype=np.float64)[:, :6]
+		extraBoneWeightsArray = np.asarray(extraBoneWeightsList, dtype=np.float64)[:, :6]
+		boneWeightsArray = np.hstack((boneWeightsArray,extraBoneWeightsArray))
+		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
+	else:
+		boneWeightsArray = np.array(boneWeightsList)
+		boneWeightsArray = np.hstack((boneWeightsArray,np.array(extraBoneWeightsList)))
+		boneWeightsArray = QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights)
 	
 	if normalizeWeights and (255 - np.sum(boneWeightsArray,axis = 1,dtype = np.int32) != 0).any():
 		raiseWarning("Non normalized weights detected on sub mesh! Weights may not behave as expected in game!")
@@ -2000,7 +2014,12 @@ def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,ext
 	
 	extraWeightArray = np.empty((len(extraBoneWeightsList)*2,8), dtype=np.dtype("<B"))
 	extraWeightArray[::2] = extraBoneIndicesArray
-	extraWeightArray[1::2] = boneWeightsArray[:,8:]
+	if version == VERSION_ONIWOTS:
+		extraPhysicalWeights = np.zeros((len(extraBoneWeightsList),8), dtype=np.uint8)
+		extraPhysicalWeights[:,:4] = boneWeightsArray[:,8:12]
+		extraWeightArray[1::2] = extraPhysicalWeights
+	else:
+		extraWeightArray[1::2] = boneWeightsArray[:,8:]
 	extraBufferStream.write(extraWeightArray.tobytes())
 	
 	
@@ -2186,9 +2205,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						
 						if len(parsedSubMesh.weightIndicesList) != 0 and len(parsedSubMesh.weightIndicesList) == len(parsedSubMesh.weightList):
 							if parsedMesh.bufferHasExtraWeight and len(parsedSubMesh.extraWeightIndicesList) != 0 and len(parsedSubMesh.extraWeightIndicesList) == len(parsedSubMesh.extraWeightList):
-								WriteToWeightBufferExtended(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,extraWeightBuffer,parsedSubMesh.extraWeightList,parsedSubMesh.extraWeightIndicesList,isSixWeight,normalizeWeights)
+								WriteToWeightBufferExtended(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,extraWeightBuffer,parsedSubMesh.extraWeightList,parsedSubMesh.extraWeightIndicesList,isSixWeight,normalizeWeights,version)
 							else:
-								WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,isSixWeight,normalizeWeights)
+								WriteToWeightBuffer(weightBuffer,parsedSubMesh.weightList,parsedSubMesh.weightIndicesList,isSixWeight,normalizeWeights,version)
 						
 						#DD2 shapekeys
 						if len(parsedSubMesh.secondaryWeightIndicesList) != 0 and len(parsedSubMesh.secondaryWeightIndicesList) == len(parsedSubMesh.secondaryWeightList):
