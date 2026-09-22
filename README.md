@@ -25,6 +25,10 @@ The checkbox for export 'Normalize Weights' has been added. The reason for this 
 6. Support for Onimusha: WoTS meshes
 
 7. Added new user configuration and export settings
+
+8. Sped up some functions such as bone index packing
+
+
 ################################ Original Repository Description as of 6/10/26 ###############################
 # End Of Support Notice
 
