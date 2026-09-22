@@ -1951,7 +1951,7 @@ def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight
 	
 	if isSixWeight:
 		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
-		if version == VERSION_ONIWOTS and len(boneIndicesArray) != 0:
+		if (version == VERSION_MHWILDS or version == VERSION_ONIWOTS) and len(boneIndicesArray) != 0:
 			packed = boneIndicesArray.copy().view("<u8").reshape((-1))
 			packed |= (np.uint64(3) << np.uint64(30)) | (np.uint64(3) << np.uint64(62))
 			boneIndicesArray = packed.reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
@@ -1980,7 +1980,7 @@ def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,ext
 	if isSixWeight:
 		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
 		extraBoneIndicesArray = PackSixWeightIndices(extraBoneIndicesList)
-		if version == VERSION_ONIWOTS and len(boneIndicesArray) != 0:
+		if (version == VERSION_MHWILDS or version == VERSION_ONIWOTS) and len(boneIndicesArray) != 0:
 			packed = boneIndicesArray.copy().view("<u8").reshape((-1))
 			packed |= (np.uint64(3) << np.uint64(30)) | (np.uint64(3) << np.uint64(62))
 			boneIndicesArray = packed.reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
@@ -1990,7 +1990,7 @@ def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,ext
 	
 	
 	
-	if version == VERSION_ONIWOTS:
+	if version == VERSION_MHWILDS or version == VERSION_ONIWOTS:
 		boneWeightsArray = np.asarray(boneWeightsList, dtype=np.float64)[:, :6]
 		extraBoneWeightsArray = np.asarray(extraBoneWeightsList, dtype=np.float64)[:, :6]
 		boneWeightsArray = np.hstack((boneWeightsArray,extraBoneWeightsArray))
@@ -2014,7 +2014,7 @@ def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,ext
 	
 	extraWeightArray = np.empty((len(extraBoneWeightsList)*2,8), dtype=np.dtype("<B"))
 	extraWeightArray[::2] = extraBoneIndicesArray
-	if version == VERSION_ONIWOTS:
+	if version == VERSION_MHWILDS or version == VERSION_ONIWOTS:
 		extraPhysicalWeights = np.zeros((len(extraBoneWeightsList),8), dtype=np.uint8)
 		extraPhysicalWeights[:,:4] = boneWeightsArray[:,8:12]
 		extraWeightArray[1::2] = extraPhysicalWeights

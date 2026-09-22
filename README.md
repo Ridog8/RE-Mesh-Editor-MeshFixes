@@ -28,8 +28,13 @@ The checkbox for export 'Normalize Weights' has been added. The reason for this 
 
 8. Sped up some functions such as bone index packing
 
+9. Extended weights packed closer to vanilla structure (only Wilds + Oni:WoTS at the time of writing this)
 
-################################ Original Repository Description as of 6/10/26 ###############################
+## Credits Specific to this fork (more credits for the original repo down below)
+[HeartBee.](https://github.com/StellarBladeModding) - For helping test extended weight packing.
+
+
+########### Original Repository Description as of 6/10/26 ###################
 # End Of Support Notice
 
 I am ending development of my RE Engine addons. No further updates or support will be provided.
@@ -613,8 +618,7 @@ You may be using an outdated .mdf2 file, be sure to extract from the latest patc
 
 [Haven's Night Discord](https://discord.gg/modding-haven-718224210270617702)
 
-## Credits
-
+## Credits 
 - [Ando](https://github.com/Andoryuuta) - Solving the compression format for MH Wilds textures.
 - [AsteriskAmpersand](https://github.com/AsteriskAmpersand) - Mesh format research and tex conversion code
 - [AlphaZomega](https://github.com/alphazolam/) - RE Mesh 010 Template and Noesis plugin

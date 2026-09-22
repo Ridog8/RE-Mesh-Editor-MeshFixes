@@ -29,6 +29,11 @@ SIX_WEIGHT_MESH_VERSIONS = frozenset([
 	#VERSION_PRAGDEMO,
 	])
 
+EIGHT_FOUR_EXTENDED_WEIGHT_MESH_VERSIONS = frozenset((
+	VERSION_MHWILDS,
+	VERSION_ONIWOTS,
+))
+
 typeNameMapping = ["Position","NorTan","UV","UV2","Weight","Color","SF6UnknownVertexDataType","ExtraWeight"]
 typeStrideDict = {
 	"Position":12,
@@ -274,7 +279,7 @@ def ReadVertexElementBuffers(vertexElementList,vertexBuffer,tagSet):
 		elif "shadowLOD" in tagSet:
 			vertexDict[elementName] = BufferReadDict[elementName](vertexBuffer[vertexElement.posStartOffset:bufferEnd],tagSet)
 
-	if "ONIWOTS" in tagSet and "SixWeightCompressed" in tagSet and vertexDict["Weight"] is not None:
+	if "EightFourExtendedWeight" in tagSet and "SixWeightCompressed" in tagSet and vertexDict["Weight"] is not None:
 		primaryIndices, primaryWeights = vertexDict["Weight"]
 		if vertexDict["ExtraWeight"] is not None:
 			extraIndices, extraWeights = vertexDict["ExtraWeight"]
@@ -1050,6 +1055,8 @@ class ParsedREMesh:
 				tags.add("SixWeightCompressed")#Add tag to parse compressed weights
 			if reMesh.meshVersion == VERSION_ONIWOTS:
 				tags.add("ONIWOTS")
+			if reMesh.meshVersion in EIGHT_FOUR_EXTENDED_WEIGHT_MESH_VERSIONS:
+				tags.add("EightFourExtendedWeight")
 			if reMesh.meshVersion in BLEND_SHAPE_MESH_VERSIONS:
 				tags.add("MHWILDS")
 			#if duplicate in vertexelementlist, add shadowLOD tag
