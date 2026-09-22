@@ -23,7 +23,7 @@ from .modules.gen_functions import textColors,raiseWarning,getFolderSize,formatB
 from .modules.blender_utils import operator_exists
 #mesh
 from .modules.mesh.file_re_mesh import meshFileVersionToGameNameDict
-from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile
+from .modules.mesh.blender_re_mesh import importREMeshFile,exportREMeshFile,getMeshWeightLimits
 from .modules.mesh.re_mesh_propertyGroups import (
 	ExporterNodePropertyGroup,
 	MESH_UL_REExporterList
@@ -164,6 +164,26 @@ from .modules.workspace.ui_re_mod_workspace_panels import (
 os.system("color")#Enable console colors
 
 
+MESH_EXPORT_VERSION_ITEMS = [
+	(".1808282334", "Devil May Cry 5", "Devil May Cry 5"),
+	(".1808312334", "Resident Evil 2", "Resident Evil 2"),
+	(".1902042334", "Resident Evil 3", "Resident Evil 3"),
+	(".2101050001", "Resident Evil 8", "Resident Evil 8"),
+	(".2109108288", "Resident Evil 2 / 3 Ray Tracing", "Resident Evil 2/3 Ray Tracing Version"),
+	(".220128762", "Resident Evil 7 Ray Tracing", "Resident Evil 7 Ray Tracing Version"),
+	(".2109148288", "Monster Hunter Rise", "Monster Hunter Rise"),
+	(".221108797", "Resident Evil 4", "Resident Evil 4"),
+	(".230110883", "Street Fighter 6", "Street Fighter 6"),
+	(".240423143", "Dragon's Dogma 2", "Dragon's Dogma 2"),
+	(".240306278", "Kunitsu-Gami", "Kunitsu-Gami"),
+	(".240424828", "Dead Rising", "Dead Rising"),
+	(".240827123", "Onimusha 2", "Onimusha 2"),
+	(".241111606", "Monster Hunter Wilds", "Monster Hunter Wilds"),
+	(".250925211", "Resident Evil 9", "Resident Evil 9"),
+	(".250604100", "Monster Hunter Stories 3", "Monster Hunter Stories 3"),
+	(".260209350", "Onimusha: Way of the Sword", "Onimusha: Way of the Sword (retail/current)"),
+]
+
 #Used to circumvent the issue of properties not being able to used as defaults for other properties at startup
 def setMeshImportDefaults(self):
 	self.clearScene = bpy.context.preferences.addons[__name__].preferences.default_clearScene
@@ -186,6 +206,7 @@ def setMeshImportDefaults(self):
 	#print("RE Mesh Editor: Loaded Default Import Settings")
 	
 def setMeshExportDefaults(self):
+	self.filename_ext = bpy.context.preferences.addons[__name__].preferences.default_meshVersion
 	self.selectedOnly = bpy.context.preferences.addons[__name__].preferences.default_selectedOnly
 	self.exportAllLODs = bpy.context.preferences.addons[__name__].preferences.default_exportAllLODs
 	self.exportBlendShapes = bpy.context.preferences.addons[__name__].preferences.default_exportBlendShapes
@@ -193,6 +214,7 @@ def setMeshExportDefaults(self):
 	self.autoSolveRepeatedUVs = bpy.context.preferences.addons[__name__].preferences.default_autoSolveRepeatedUVs
 	self.preserveSharpEdges = bpy.context.preferences.addons[__name__].preferences.default_preserveSharpEdges
 	self.splitLoopVertices = bpy.context.preferences.addons[__name__].preferences.default_splitLoopVertices
+	self.limitTotal = bpy.context.preferences.addons[__name__].preferences.default_limitTotal
 	self.normalizeWeights = bpy.context.preferences.addons[__name__].preferences.default_normalizeWeights
 	self.useBlenderMaterialName = bpy.context.preferences.addons[__name__].preferences.default_useBlenderMaterialName
 	self.preserveBoneMatrices = bpy.context.preferences.addons[__name__].preferences.default_preserveBoneMatrices
@@ -537,6 +559,11 @@ class REMeshPreferences(AddonPreferences):
 	   default = False)
 	
 	#Default export options
+	default_meshVersion : EnumProperty(
+	   name = "Mesh Version",
+	   description = "Default mesh version selected when exporting",
+	   items = MESH_EXPORT_VERSION_ITEMS,
+	   default = ".1808282334")
 	default_selectedOnly : BoolProperty(
 	   name = "Selected Objects Only",
 	   description = "Limit export to selected objects",
@@ -566,6 +593,10 @@ class REMeshPreferences(AddonPreferences):
 	   name = "Split Vertices For Corner Attributes",
 	   description = "Creates extra exported vertices when loop/corner normals, tangents, UVs, or colors differ. Enable this to preserve hard normals and other data. Disable it to keep 1:1 vertex per Blender vertex.",
 	   default = True)
+	default_limitTotal : BoolProperty(
+	   name = "Limit Total",
+	   description = "Keep in mind, you will probably want to enable the setting for normalize weights if you enable this setting. Otherwise, limit total manually/without this setting to preserve unnormalized weights.",
+	   default = False)
 	default_normalizeWeights : BoolProperty(
 	   name = "Normalize Weights",
 	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
@@ -657,11 +688,13 @@ class REMeshPreferences(AddonPreferences):
 		column = split.column()
 		column2 = split.column()
 		if self.showExportOptions:
+			column2.prop(self, "default_meshVersion")
 			column2.prop(self, "default_selectedOnly")
 			column2.prop(self, "default_exportAllLODs")
 			column2.prop(self,"default_autoSolveRepeatedUVs")
 			column2.prop(self,"default_preserveSharpEdges")
 			column2.prop(self,"default_splitLoopVertices")
+			column2.prop(self,"default_limitTotal")
 			column2.prop(self,"default_normalizeWeights")
 			column2.prop(self, "default_rotate90export")
 			column2.prop(self, "default_useBlenderMaterialName")
@@ -936,6 +969,17 @@ def update_targetMeshCollection(self,context):
 		#print(browserSpace.params.filename)
 		if ".mesh" in self.targetCollection:
 			browserSpace.params.filename = self.targetCollection.split(".mesh")[0]+".mesh" + self.filename_ext
+def getMeshExportDefaultWeightLimit(filenameExt):
+	try:
+		meshVersion = int(str(filenameExt).replace(".", ""))
+	except:
+		return 8
+	gameName = meshFileVersionToGameNameDict.get(meshVersion)
+	return getMeshWeightLimits(gameName)[1]
+
+def updateMeshExportWeightLimit(self, context):
+	self.limitTotalCount = getMeshExportDefaultWeightLimit(self.filename_ext)
+
 class ExportREMesh(Operator, ExportHelper):
 	'''Export RE Engine Mesh File'''
 	bl_idname = "re_mesh.exportfile"
@@ -947,26 +991,9 @@ class ExportREMesh(Operator, ExportHelper):
 	filename_ext: EnumProperty(
 		name="",
 		description="Set which game to export the mesh for",
-		items= [
-				(".1808282334", "Devil May Cry 5", "Devil May Cry 5"), 
-				(".1808312334", "Resident Evil 2", "Resident Evil 2"),
-				(".1902042334", "Resident Evil 3", "Resident Evil 3"),
-				(".2101050001", "Resident Evil 8", "Resident Evil 8"),
-				(".2109108288", "Resident Evil 2 / 3 Ray Tracing", "Resident Evil 2/3 Ray Tracing Version"),
-				(".220128762", "Resident Evil 7 Ray Tracing", "Resident Evil 7 Ray Tracing Version"),
-			    (".2109148288", "Monster Hunter Rise", "Monster Hunter Rise"),
-				(".221108797", "Resident Evil 4", "Resident Evil 4"),
-				(".230110883", "Street Fighter 6", "Street Fighter 6"),
-				(".240423143", "Dragon's Dogma 2", "Dragon's Dogma 2"),
-				(".240306278", "Kunitsu-Gami", "Kunitsu-Gami"),
-				(".240424828", "Dead Rising", "Dead Rising"),
-				(".240827123", "Onimusha 2", "Onimusha 2"),
-				(".241111606", "Monster Hunter Wilds", "Monster Hunter Wilds"),
-				#(".250925211", "Resident Evil 9 / Pragmata", "Resident Evil 9 / Pragmata"),
-				(".250925211", "Resident Evil 9", "Resident Evil 9"),
-				(".250604100", "Monster Hunter Stories 3", "Monster Hunter Stories 3"),
-				(".260209350", "Onimusha: Way of the Sword", "Onimusha: Way of the Sword (retail/current)"),
-			   ]
+		update=updateMeshExportWeightLimit,
+		items=MESH_EXPORT_VERSION_ITEMS,
+		default=".1808282334",
 		)
 	targetCollection: bpy.props.StringProperty(
 		name="",
@@ -1025,6 +1052,16 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "Split Vertices For Corner Attributes",
 	   description = "Creates extra exported vertices when loop/corner normals, tangents, UVs, or colors differ. Enable this to preserve hard normals and other data. Disable it to keep 1:1 vertex per Blender vertex.",
 	   default = True)
+	limitTotal : BoolProperty(
+	   name = "Limit Total",
+	   description = "Keep in mind, you will probably want to enable the setting for normalize weights if you enable this setting. Otherwise, limit total manually/without this setting to preserve unnormalized weights.",
+	   default = False)
+	limitTotalCount : IntProperty(
+	   name = "Max Weights",
+	   description = "The game's max supported weight is default here.",
+	   default = 8,
+	   min = 1,
+	   max = 32)
 	normalizeWeights : BoolProperty(
 	   name = "Normalize Weights",
 	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
@@ -1128,8 +1165,13 @@ class ExportREMesh(Operator, ExportHelper):
 		row2.prop(self,"preserveSharpEdges")
 		row3 = layout.row()
 		row3.prop(self,"splitLoopVertices")
-		row4 = layout.row()
-		row4.prop(self,"normalizeWeights")
+		row4 = layout.row(align=True)
+		row4.prop(self,"limitTotal")
+		limitRow = row4.row(align=True)
+		limitRow.enabled = self.limitTotal
+		limitRow.prop(self,"limitTotalCount", text="Max Weights")
+		row5 = layout.row()
+		row5.prop(self,"normalizeWeights")
 		if self.filename_ext == ".241111606":
 					row = layout.row()
 					split = row.split(factor=0.48)
@@ -1172,6 +1214,8 @@ class ExportREMesh(Operator, ExportHelper):
 			"autoSolveRepeatedUVs": self.autoSolveRepeatedUVs,
 			"preserveSharpEdges": self.preserveSharpEdges,
 			"splitLoopVertices": self.splitLoopVertices,
+			"limitTotal": self.limitTotal,
+			"limitTotalCount": self.limitTotalCount,
 			"normalizeWeights": self.normalizeWeights,
 		}
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
@@ -1194,6 +1238,8 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_exportAllLODs"] = self.exportAllLODs
 				bpy.data.collections[self.targetCollection]["BatchExport_preserveSharpEdges"] = self.preserveSharpEdges
 				bpy.data.collections[self.targetCollection]["BatchExport_splitLoopVertices"] = self.splitLoopVertices
+				bpy.data.collections[self.targetCollection]["BatchExport_limitTotal"] = self.limitTotal
+				bpy.data.collections[self.targetCollection]["BatchExport_limitTotalCount"] = self.limitTotalCount
 				bpy.data.collections[self.targetCollection]["BatchExport_normalizeWeights"] = self.normalizeWeights
 				bpy.data.collections[self.targetCollection]["BatchExport_rotate90"] = self.rotate90
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBlendShapes"] = self.exportBlendShapes

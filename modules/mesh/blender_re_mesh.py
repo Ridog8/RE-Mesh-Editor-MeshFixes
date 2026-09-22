@@ -25,7 +25,7 @@ from ..mdf.file_re_mdf import readMDF
 from ..mdf.blender_re_mesh_mdf import findMDFPathFromMeshPath,importMDF
 from ..mdf.blender_re_mdf import importMDFFile
 from ..sfur.blender_re_sfur import importSFurFile,findSFurPathFromMeshPath
-from .re_mesh_export_errors import addErrorToDict,printErrorDict,showREMeshErrorWindow
+from .re_mesh_export_errors import addErrorToDict,printErrorDict,showREMeshErrorWindow,errorInfoDict
 from ..gen_functions import splitNativesPath,raiseWarning
 from ..blender_utils import showErrorMessageBox,showMessageBox
 from ..hashing.mmh3.pymmh3 import hashUTF8
@@ -49,6 +49,39 @@ def triangulateMesh(mesh):
     bm.free()
     #if custom_normals:
         #mesh.normals_split_custom_set_from_vertices(custom_normals)
+
+SIX_WEIGHT_GAME_NAMES = frozenset(("SF6", "MHWILDS", "PRAG", "MHS3", "ONIWOTS"))
+EXTENDED_WEIGHT_GAME_NAMES = frozenset(("MHWILDS", "PRAG", "MHS3", "ONIWOTS"))
+
+def getMeshWeightLimits(gameName):
+	if gameName in SIX_WEIGHT_GAME_NAMES:
+		baseWeights = 6
+		maxWeightedBones = 1024
+	else:
+		baseWeights = 8
+		maxWeightedBones = 256
+	maxTotalWeights = baseWeights * 2 if gameName in EXTENDED_WEIGHT_GAME_NAMES else baseWeights
+	return (baseWeights, maxTotalWeights, maxWeightedBones)
+
+def limitTotalWeights(obj, limit):
+	if obj is None or obj.type != "MESH" or len(obj.vertex_groups) == 0:
+		return
+	limit = max(1, min(32, int(limit)))
+	viewLayer = bpy.context.view_layer
+	previousActive = viewLayer.objects.active
+	previousSelection = list(bpy.context.selected_objects)
+	try:
+		bpy.ops.object.select_all(action='DESELECT')
+		obj.select_set(True)
+		viewLayer.objects.active = obj
+		bpy.ops.object.vertex_group_limit_total(limit=limit)
+	finally:
+		bpy.ops.object.select_all(action='DESELECT')
+		for selectedObj in previousSelection:
+			if selectedObj.name in bpy.context.view_layer.objects:
+				selectedObj.select_set(True)
+		if previousActive is not None and previousActive.name in bpy.context.view_layer.objects:
+			viewLayer.objects.active = previousActive
 
 def pad_infinite(iterable, padding=None):
 	return chain(iterable, repeat(padding))
@@ -1273,16 +1306,19 @@ def exportREMeshFile(filePath,options):
 	if bpy.context and bpy.context.active_object != None:
 		bpy.ops.object.mode_set(mode='OBJECT')
 	
-	maxWeightsPerVertex = 8
-	maxWeightsPerVertexExtended = 16
-	maxWeightedBones = 256
-	SIX_WEIGHT_GAMES = set(["SF6","MHWILDS","PRAG","MHS3","ONIWOTS"])
-	EXTENDED_WEIGHT_GAMES = set(["MHWILDS","PRAG","MHS3","ONIWOTS",])#Games with support for extended weight buffers
-	if gameName in SIX_WEIGHT_GAMES:
-		maxWeightsPerVertex = 6
-		maxWeightsPerVertexExtended = 12
-		maxWeightedBones = 1024
+	maxWeightsPerVertex, maxWeightsPerVertexExtended, maxWeightedBones = getMeshWeightLimits(gameName)
+	EXTENDED_WEIGHT_GAMES = EXTENDED_WEIGHT_GAME_NAMES
 	padWithLastWeightIndex = True if gameName in {"PRAG", "MHS3", "ONIWOTS", "RE9"} else False
+	errorInfoDict["ExtendedMaxWeightsPerVertexExceeded"] = f"""Extended Max Weights Per Vertex Exceeded On Sub Mesh
+A vertex has more the maximum of {maxWeightsPerVertexExtended} weights assigned to it.
+
+HOW TO FIX:
+_______________
+Limit total weights to {maxWeightsPerVertexExtended} in weight paint mode and normalize all weights from the Weights menu.
+
+OR
+Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
+"""
 	MAX_VERTICES = 65536
 	MAX_VERTICES_EXTENDED = 4294967295
 	MAX_FACES = 4294967295
@@ -1611,6 +1647,13 @@ def exportREMeshFile(filePath,options):
 				clonedMeshCollection.objects.link(cloneObj)
 				
 				print(f"Created temporary clone of {obj.name}: {cloneObj.name}")
+				if options.get("limitTotal", False):
+					limitTotalCount = max(1, min(32, int(options.get("limitTotalCount", maxWeightsPerVertexExtended))))
+					try:
+						limitTotalWeights(cloneObj, limitTotalCount)
+						print(f"Limited total weights to {limitTotalCount} on {cloneObj.name}")
+					except Exception as err:
+						raiseWarning(f"Failed to limit total weights on {obj.name}. {str(err)}")
 				cloneMeshNameDict[obj.name] = cloneObj.name
 				deleteCopiedMeshList.append(cloneObj)
 				if options["autoSolveRepeatedUVs"]:
@@ -1880,21 +1923,21 @@ def exportREMeshFile(filePath,options):
 								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
 
 					if len(weightList) > maxWeightsPerVertex:
-						parsedMesh.bufferHasExtraWeight = True
-
 						if gameName not in EXTENDED_WEIGHT_GAMES:
 							addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
+						else:
+							parsedMesh.bufferHasExtraWeight = True
 
-						extraWeightList = list(
-							pad(weightList[maxWeightsPerVertex:], size=8, padding=0.0)
-						)
+							extraWeightList = list(
+								pad(weightList[maxWeightsPerVertex:], size=8, padding=0.0)
+							)
 
-						extraWeightIndicesList = list(
-							pad(weightIndicesList[maxWeightsPerVertex:], size=8, padding=paddingValue)
-						)
+							extraWeightIndicesList = list(
+								pad(weightIndicesList[maxWeightsPerVertex:], size=8, padding=paddingValue)
+							)
 
-						if len(weightList) > maxWeightsPerVertexExtended:
-							addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
+							if len(weightList) > maxWeightsPerVertexExtended:
+								addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
 
 					if len(secondaryWeightList) > maxWeightsPerVertex:
 						addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
