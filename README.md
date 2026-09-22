@@ -21,6 +21,10 @@ The checkbox for export 'Normalize Weights' has been added. The reason for this 
 <img width="2838" height="1445" alt="DD2" src="https://github.com/user-attachments/assets/9004eced-9f12-4b41-b0db-fe7037be26e2" />
 
 5. Support for MHWs blendshapes
+
+6. Support for Onimusha: WoTS meshes
+
+7. Added new user configuration and export settings
 ################################ Original Repository Description as of 6/10/26 ###############################
 # End Of Support Notice
 
