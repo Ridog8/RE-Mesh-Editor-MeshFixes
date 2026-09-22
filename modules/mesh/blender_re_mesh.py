@@ -1276,13 +1276,13 @@ def exportREMeshFile(filePath,options):
 	maxWeightsPerVertex = 8
 	maxWeightsPerVertexExtended = 16
 	maxWeightedBones = 256
-	SIX_WEIGHT_GAMES = set(["SF6","MHWILDS","PRAG"])
-	EXTENDED_WEIGHT_GAMES = set(["MHWILDS","PRAG","MHS3",])#Games with support for extended weight buffers
+	SIX_WEIGHT_GAMES = set(["SF6","MHWILDS","PRAG","MHS3","ONIWOTS"])
+	EXTENDED_WEIGHT_GAMES = set(["MHWILDS","PRAG","MHS3","ONIWOTS",])#Games with support for extended weight buffers
 	if gameName in SIX_WEIGHT_GAMES:
 		maxWeightsPerVertex = 6
 		maxWeightsPerVertexExtended = 12
 		maxWeightedBones = 1024
-	padWithLastWeightIndex = True if gameName == "PRAG" or gameName == "MHS3" or gameName == "RE9" else False
+	padWithLastWeightIndex = True if gameName in {"PRAG", "MHS3", "ONIWOTS", "RE9"} else False
 	MAX_VERTICES = 65536
 	MAX_VERTICES_EXTENDED = 4294967295
 	MAX_FACES = 4294967295

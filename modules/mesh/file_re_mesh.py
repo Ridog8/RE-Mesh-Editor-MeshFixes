@@ -55,6 +55,7 @@ VERSION_ONI2 = 127#file:240827123,internal:240827123
 VERSION_MHWILDS = 130#file:241111606,internal:240704828
 VERSION_PRAGDEMO = 135#file:250925211,internal:250707828
 VERSION_MHS3 = 136#file:250604100,internal:250203152
+VERSION_ONIWOTS = 138#file:260209350,internal:250203152
 VERSION_RE9 = 140#file:250925211,internal:250707828#RE9 Placeholder
 
 BLEND_SHAPE_VERSIONS = frozenset((
@@ -66,6 +67,7 @@ SIX_WEIGHT_GAMES = frozenset([
 	VERSION_MHWILDS,
 	VERSION_MHS3,
 	VERSION_PRAGDEMO,
+	VERSION_ONIWOTS,
 	])
 
 meshFileVersionToNewVersionDict = {
@@ -87,6 +89,7 @@ meshFileVersionToNewVersionDict = {
 	240827123:VERSION_ONI2,
 	241111606:VERSION_MHWILDS,
 	250604100:VERSION_MHS3,
+	260209350:VERSION_ONIWOTS,
 	#250925211:VERSION_PRAGDEMO,
 	250925211:VERSION_RE9,
 	}
@@ -107,6 +110,7 @@ newVersionToMeshFileVersion = {
 	VERSION_ONI2:240820143,
 	VERSION_MHWILDS:241111606,
 	VERSION_MHS3:250604100,
+	VERSION_ONIWOTS:260209350,
 	#VERSION_PRAGDEMO:250925211,
 	VERSION_RE9:250925211,
 	}
@@ -127,6 +131,7 @@ meshFileVersionToInternalVersionDict = {
 	240827123:240704828,#VERSION_ONI2
 	241111606:240704828,#VERSION_MHWILDS
 	250604100:250203152,#VERSION_MHS3
+	260209350:250203152,#VERSION_ONIWOTS
 	#250925211:250707828,#VERSION_PRAGDEMO
 	250925211:250904410,#VERSION_RE9
 	}
@@ -169,6 +174,7 @@ meshFileVersionToGameNameDict = {
 	240827123:"ONI2",#VERSION_ONI2
 	241111606:"MHWILDS",#VERSION_MHWILDS
 	250604100:"MHS3",#VERSION_MHS3
+	260209350:"ONIWOTS",#Onimusha: WoTS
 	#250925211:"PRAG",#VERSION_PRAGDEMO
 	250925211:"RE9",#VERSION_RE9
 	}
@@ -297,10 +303,16 @@ class MaterialSubdivision():
 		self.streamingPlatormSpecificOffsetBytes = 0
 		self.dr_unkn1 = 0
 	def read(self,file,version):
-		self.materialIndex = read_ubyte(file)	
-		self.isQuad = read_ubyte(file)
-		self.vertexBufferIndex = read_ubyte(file)
-		self.padding = read_ubyte(file)
+		if version == VERSION_ONIWOTS:
+			self.materialIndex = read_ushort(file)
+			self.vertexBufferIndex = read_ubyte(file)
+			self.padding = read_ubyte(file)
+			self.isQuad = 0
+		else:
+			self.materialIndex = read_ubyte(file)	
+			self.isQuad = read_ubyte(file)
+			self.vertexBufferIndex = read_ubyte(file)
+			self.padding = read_ubyte(file)
 		if version >= VERSION_DR:
 			self.dr_unkn0 = read_uint(file)
 		self.faceCount = read_uint(file)
@@ -312,10 +324,15 @@ class MaterialSubdivision():
 		if version >= VERSION_DD2NEW:
 			self.dr_unkn1 = read_uint(file)
 	def write(self,file,version):
-		write_ubyte(file, self.materialIndex)
-		write_ubyte(file, self.isQuad)
-		write_ubyte(file, self.vertexBufferIndex)
-		write_ubyte(file, self.padding)
+		if version == VERSION_ONIWOTS:
+			write_ushort(file, self.materialIndex)
+			write_ubyte(file, self.vertexBufferIndex)
+			write_ubyte(file, self.padding)
+		else:
+			write_ubyte(file, self.materialIndex)
+			write_ubyte(file, self.isQuad)
+			write_ubyte(file, self.vertexBufferIndex)
+			write_ubyte(file, self.padding)
 		if version >= VERSION_DR:
 			write_uint(file, self.dr_unkn0)
 		write_uint(file, self.faceCount)
@@ -1004,10 +1021,16 @@ class FileHeader():
 			self.contentFlag.read(file)
 			self.sf6UnknCount = read_short(file)
 			
-			self.wilds_unkn2 = read_uint(file)
-			self.wilds_unkn3 = read_uint(file)
-			self.wilds_unkn4 = read_uint(file)
-			self.wilds_unkn5 = read_short(file)
+			if version == VERSION_ONIWOTS:
+				self.wilds_unkn2 = read_short(file)
+				self.wilds_unkn3 = read_uint(file)
+				self.wilds_unkn4 = read_uint(file)
+				self.wilds_unkn5 = read_uint(file)
+			else:
+				self.wilds_unkn2 = read_uint(file)
+				self.wilds_unkn3 = read_uint(file)
+				self.wilds_unkn4 = read_uint(file)
+				self.wilds_unkn5 = read_short(file)
 				
 			self.verticesOffset = read_uint64(file)
 			self.meshGroupOffset = read_uint64(file)
@@ -1091,10 +1114,16 @@ class FileHeader():
 			write_short(file, self.nameCount)
 			self.contentFlag.write(file)
 			write_short(file, self.sf6UnknCount)
-			write_uint(file, self.wilds_unkn2)
-			write_uint(file, self.wilds_unkn3)
-			write_uint(file, self.wilds_unkn4)
-			write_short(file, self.wilds_unkn5)
+			if version == VERSION_ONIWOTS:
+				write_short(file, self.wilds_unkn2)
+				write_uint(file, self.wilds_unkn3)
+				write_uint(file, self.wilds_unkn4)
+				write_uint(file, self.wilds_unkn5)
+			else:
+				write_uint(file, self.wilds_unkn2)
+				write_uint(file, self.wilds_unkn3)
+				write_uint(file, self.wilds_unkn4)
+				write_short(file, self.wilds_unkn5)
 			write_uint64(file, self.verticesOffset)
 			write_uint64(file, self.meshGroupOffset)
 			write_uint64(file, self.shadowMeshGroupOffset)
@@ -1899,27 +1928,29 @@ def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
 	return quantizedWeights.astype("<B")
 
 
+def PackSixWeightIndices(boneIndicesList):
+	indices = np.asarray(boneIndicesList, dtype=np.uint64)
+	if indices.size == 0:
+		return np.empty((0, 8), dtype=np.uint8)
+	if indices.ndim != 2 or indices.shape[1] < 6:
+		raise ValueError("Six-weight bone index data must contain at least 6 indices per vertex")
+
+	indices = indices[:, :6]
+	packed = (
+		(indices[:, 0] & np.uint64(0x3FF))
+		| ((indices[:, 1] & np.uint64(0x3FF)) << np.uint64(10))
+		| ((indices[:, 2] & np.uint64(0x3FF)) << np.uint64(20))
+		| ((indices[:, 3] & np.uint64(0x3FF)) << np.uint64(32))
+		| ((indices[:, 4] & np.uint64(0x3FF)) << np.uint64(42))
+		| ((indices[:, 5] & np.uint64(0x3FF)) << np.uint64(52))
+	)
+	return packed.astype("<u8", copy=False).reshape((-1, 1)).view(np.uint8).reshape((-1, 8))
+
+
 def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight=False,normalizeWeights=True):
 	
 	if isSixWeight:
-		#TODO Do bitfield work in numpy
-		bf = CompressedSixWeightIndices()
-		uint64Array = np.empty((len(boneWeightsList),1), dtype=np.dtype("<Q"))
-		for index in range(len(boneIndicesList)):
-			#print(f"boneIndicesList: {boneIndicesList[index]}")
-			bf.weights.w0 = boneIndicesList[index][0]
-			bf.weights.w1 = boneIndicesList[index][1]
-			bf.weights.w2 = boneIndicesList[index][2]
-			bf.weights.pad0 = 0
-			bf.weights.w3 = boneIndicesList[index][3]
-			bf.weights.w4 = boneIndicesList[index][4]
-			bf.weights.w5 = boneIndicesList[index][5]
-			bf.weights.pad1 = 0
-			uint64Array[index] = bf.asUInt64
-			#print(f"bitfield: {[bf.weights.w0,bf.weights.w1,bf.weights.w2,bf.weights.w3,bf.weights.w4,bf.weights.w5]}")
-			#print(f"uint64: {uint64Array[index]}\n")
-		boneIndicesArray = uint64Array.view(dtype = "<B")#.byteswap(inplace=True)
-		#print(boneIndicesArray)
+		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
 	else:
 		boneIndicesArray = boneIndicesList.astype("<B")
 	
@@ -1942,40 +1973,8 @@ def WriteToWeightBuffer(bufferStream,boneWeightsList,boneIndicesList,isSixWeight
 def WriteToWeightBufferExtended(bufferStream,boneWeightsList,boneIndicesList,extraBufferStream,extraBoneWeightsList,extraBoneIndicesList,isSixWeight=False,normalizeWeights=True):
 	
 	if isSixWeight:
-		#TODO Do bitfield work in numpy
-		bf = CompressedSixWeightIndices()
-		uint64Array = np.empty((len(boneWeightsList),1), dtype=np.dtype("<Q"))
-		for index in range(len(boneIndicesList)):
-			#print(f"boneIndicesList: {boneIndicesList[index]}")
-			bf.weights.w0 = boneIndicesList[index][0]
-			bf.weights.w1 = boneIndicesList[index][1]
-			bf.weights.w2 = boneIndicesList[index][2]
-			bf.weights.pad0 = 0
-			bf.weights.w3 = boneIndicesList[index][3]
-			bf.weights.w4 = boneIndicesList[index][4]
-			bf.weights.w5 = boneIndicesList[index][5]
-			bf.weights.pad1 = 0
-			uint64Array[index] = bf.asUInt64
-			#print(f"bitfield: {[bf.weights.w0,bf.weights.w1,bf.weights.w2,bf.weights.w3,bf.weights.w4,bf.weights.w5]}")
-			#print(f"uint64: {uint64Array[index]}\n")
-		boneIndicesArray = uint64Array.view(dtype = "<B")#.byteswap(inplace=True)
-		
-		uint64Array2 = np.empty((len(extraBoneIndicesList),1), dtype=np.dtype("<Q"))#Extra weights
-		for index in range(len(extraBoneIndicesList)):
-			#print(f"boneIndicesList: {boneIndicesList[index]}")
-			bf.weights.w0 = extraBoneIndicesList[index][0]
-			bf.weights.w1 = extraBoneIndicesList[index][1]
-			bf.weights.w2 = extraBoneIndicesList[index][2]
-			bf.weights.pad0 = 0
-			bf.weights.w3 = extraBoneIndicesList[index][3]
-			bf.weights.w4 = extraBoneIndicesList[index][4]
-			bf.weights.w5 = extraBoneIndicesList[index][5]
-			bf.weights.pad1 = 0
-			uint64Array2[index] = bf.asUInt64
-			#print(f"bitfield: {[bf.weights.w0,bf.weights.w1,bf.weights.w2,bf.weights.w3,bf.weights.w4,bf.weights.w5]}")
-			#print(f"uint64: {uint64Array[index]}\n")
-		extraBoneIndicesArray = uint64Array2.view(dtype = "<B")#.byteswap(inplace=True)
-		#print(boneIndicesArray)
+		boneIndicesArray = PackSixWeightIndices(boneIndicesList)
+		extraBoneIndicesArray = PackSixWeightIndices(extraBoneIndicesList)
 	else:
 		boneIndicesArray = boneIndicesList.astype("<B")
 		extraBoneIndicesArray = extraBoneIndicesList.astype("<B")
@@ -2113,7 +2112,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 			# skinning layout even though the 12-influence bytes are present.
 			reMesh.lodHeader.skinWeightCount = 27 if parsedMesh.bufferHasExtraWeight else 25
 			#print(f"Wilds V13 skinning header: extraWeight={int(bool(parsedMesh.bufferHasExtraWeight))}; skinWeightCount={reMesh.lodHeader.skinWeightCount}")
-		elif version == VERSION_PRAGDEMO:
+		elif version == VERSION_ONIWOTS:
+			reMesh.lodHeader.skinWeightCount = 27 if parsedMesh.bufferHasExtraWeight else 25
+		elif VERSION_PRAGDEMO <= version < VERSION_RE9:
 			reMesh.lodHeader.skinWeightCount = 27#
 		elif version == VERSION_RE9:
 			reMesh.lodHeader.skinWeightCount = 18#

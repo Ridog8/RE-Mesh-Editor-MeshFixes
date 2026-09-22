@@ -290,6 +290,7 @@ class ChunkPathPropertyGroup(bpy.types.PropertyGroup):
 		("MHWILDS", "Monster Hunter Wilds", ""),
 		("PRAG", "Pragmata", ""),
 		("MHS3", "Monster Hunter Stories 3", ""),
+		("ONIWOTS", "Onimusha: Way of the Sword", ""),
 		("RE9", "Resident Evil 9", ""),
 		]
     )
@@ -964,6 +965,7 @@ class ExportREMesh(Operator, ExportHelper):
 				#(".250925211", "Resident Evil 9 / Pragmata", "Resident Evil 9 / Pragmata"),
 				(".250925211", "Resident Evil 9", "Resident Evil 9"),
 				(".250604100", "Monster Hunter Stories 3", "Monster Hunter Stories 3"),
+				(".260209350", "Onimusha: Way of the Sword", "Onimusha: Way of the Sword (retail/current)"),
 			   ]
 		)
 	targetCollection: bpy.props.StringProperty(
