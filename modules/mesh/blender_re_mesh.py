@@ -74,6 +74,8 @@ def limitTotalWeights(obj, limit):
 		bpy.ops.object.select_all(action='DESELECT')
 		obj.select_set(True)
 		viewLayer.objects.active = obj
+		obj.data.use_paint_mask = False
+		obj.data.use_paint_mask_vertex = False
 		bpy.ops.object.vertex_group_limit_total(limit=limit)
 	finally:
 		bpy.ops.object.select_all(action='DESELECT')

@@ -30,6 +30,10 @@ The checkbox for export 'Normalize Weights' has been added. The reason for this 
 
 9. Extended weights packed closer to vanilla structure (only Wilds + Oni:WoTS at the time of writing this)
 
+
+##
+For additional help, go here:
+[Modding World Discord Server](https://discord.gg/yA969DHdxM)
 ## Credits Specific to this fork (more credits for the original repo down below)
 [HeartBee.](https://github.com/StellarBladeModding) - For helping test extended weight packing.
 
