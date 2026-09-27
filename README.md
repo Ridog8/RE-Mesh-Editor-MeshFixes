@@ -30,6 +30,7 @@ The checkbox for export 'Normalize Weights' has been added. The reason for this 
 
 9. Extended weights packed closer to vanilla structure (only Wilds + Oni:WoTS at the time of writing this)
 
+10. Added DD2 TU 3.2 support and fixed wrong weight total calculation for DD2 meshes.
 
 ##
 For additional help, go here:
