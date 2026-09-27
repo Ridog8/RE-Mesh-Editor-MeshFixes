@@ -2,13 +2,13 @@
 bl_info = {
 	"name": "RE Mesh Editor",
 	"author": "NSA Cloud, Forked by Ridog8",
-	"version": (0, 68),
+	"version": (0, 70),
 	"blender": (4, 3, 2),
 	"location": "File > Import-Export",
 	"description": "Import and export RE Engine Mesh files natively into Blender. No Noesis required.",
 	"warning": "",
-	"wiki_url": "https://github.com/NSACloud/RE-Mesh-Editor",
-	"tracker_url": "https://github.com/NSACloud/RE-Mesh-Editor/issues",
+	"wiki_url": "https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes",
+	"tracker_url": "https://github.com/Ridog8/RE-Mesh-Editor-MeshFixes/issues",
 	"category": "Import-Export"}
 
 import bpy
@@ -174,7 +174,7 @@ MESH_EXPORT_VERSION_ITEMS = [
 	(".2109148288", "Monster Hunter Rise", "Monster Hunter Rise"),
 	(".221108797", "Resident Evil 4", "Resident Evil 4"),
 	(".230110883", "Street Fighter 6", "Street Fighter 6"),
-	(".240423143", "Dragon's Dogma 2", "Dragon's Dogma 2"),
+	(".260421070", "Dragon's Dogma 2", "Dragon's Dogma 2"),
 	(".240306278", "Kunitsu-Gami", "Kunitsu-Gami"),
 	(".240424828", "Dead Rising", "Dead Rising"),
 	(".240827123", "Onimusha 2", "Onimusha 2"),
@@ -1083,9 +1083,9 @@ class ExportREMesh(Operator, ExportHelper):
 			setMeshExportDefaults(self)
 			
 		if context.scene.get("REMeshLastImportedMeshVersion",0) in meshFileVersionToGameNameDict:
-			if context.scene["REMeshLastImportedMeshVersion"] == 231011879:
+			if context.scene["REMeshLastImportedMeshVersion"] in (231011879, 240423143):
 				#DD2 version update fix
-				context.scene["REMeshLastImportedMeshVersion"] = 240423143
+				context.scene["REMeshLastImportedMeshVersion"] = 260421070
 			elif context.scene["REMeshLastImportedMeshVersion"] == 2102020001:
 				#Remap RE Verse to RE8
 				context.scene["REMeshLastImportedMeshVersion"] = 2101050001
@@ -1094,9 +1094,9 @@ class ExportREMesh(Operator, ExportHelper):
 				context.scene["REMeshLastImportedMeshVersion"] = 241111606
 		
 		if context.scene.get("REMeshLastExportedMeshVersion",0) in meshFileVersionToGameNameDict:
-			if context.scene["REMeshLastExportedMeshVersion"] == 231011879:
+			if context.scene["REMeshLastExportedMeshVersion"] in (231011879, 240423143):
 				#DD2 version update fix
-				context.scene["REMeshLastExportedMeshVersion"] = 240423143
+				context.scene["REMeshLastExportedMeshVersion"] = 260421070
 			elif context.scene["REMeshLastExportedMeshVersion"] == 2102020001:
 				#Remap RE Verse to RE8
 				context.scene["REMeshLastExportedMeshVersion"] = 2101050001

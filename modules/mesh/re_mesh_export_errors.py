@@ -259,6 +259,22 @@ Use the "Limit Total and Normalize All Weights" button in the RE Mesh tab.
 """,
 
 
+"MaxPrimaryWeightsPerVertexExceeded":"""DD2 Primary Weights Per Vertex Exceeded
+A vertex has more than 8 ordinary bone weights.
+
+HOW TO FIX:
+_______________
+Limit ordinary bone weights to 8 on this mesh. Secondary weight arrays do not count towards the primary weight array's limit.
+""",
+
+"MaxSecondaryWeightsPerVertexExceeded":"""DD2 SHAPEKEY_ Weights Per Vertex Exceeded
+A vertex has more than 8 SHAPEKEY_ bone weights in the secondary weight array.
+
+HOW TO FIX:
+_______________
+Limit SHAPEKEY_ weights to 8 on this mesh. Primary weight arrays do not count towards the secondary weight array's limit.
+""",
+
 "ExtendedMaxWeightsPerVertexExceeded":"""Extended Max Weights Per Vertex Exceeded On Sub Mesh
 A vertex has more the maximum of 16 (or 12 for SF6 and MH Wilds) weights assigned to it.
 	

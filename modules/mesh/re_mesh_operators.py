@@ -106,7 +106,7 @@ class WM_OT_LimitTotalNormalizeAll(Operator):
 		description="Apply Data to attribute.",
 		items=[ ("4", "4 Weights", "Safest option but potentially lower weight quality"),
 				("6", "6 Weights (SF6)", "Maximum amount of weights for SF6"),
-				("8", "8 Weights", "Note that certain materials may not support 8 weights"),
+				("8", "8 Weights", ""),
 				("12", "12 Weights (MH Wilds or Newer)", "This is only supported in MH Wilds (and newer potentially)\nNote that some materials may not support 12 weights"),
 			   ],
 		default = "4"

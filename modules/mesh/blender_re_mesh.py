@@ -60,13 +60,30 @@ def getMeshWeightLimits(gameName):
 	else:
 		baseWeights = 8
 		maxWeightedBones = 256
-	maxTotalWeights = baseWeights * 2 if gameName in EXTENDED_WEIGHT_GAME_NAMES else baseWeights
+	# DD2's 16 total slots are two separate 8-weight arrays.
+	maxTotalWeights = baseWeights * 2 if gameName in EXTENDED_WEIGHT_GAME_NAMES or gameName == "DD2" else baseWeights
 	return (baseWeights, maxTotalWeights, maxWeightedBones)
 
-def limitTotalWeights(obj, limit):
+def limitTotalWeights(obj, limit, separateShapeKeyWeights=False):
 	if obj is None or obj.type != "MESH" or len(obj.vertex_groups) == 0:
 		return
 	limit = max(1, min(32, int(limit)))
+	if separateShapeKeyWeights:
+		limit = min(limit, 8)
+		groupsByIndex = {group.index: group for group in obj.vertex_groups}
+		for vertex in obj.data.vertices:
+			primaryWeights = []
+			shapeKeyWeights = []
+			for assignment in vertex.groups:
+				group = groupsByIndex.get(assignment.group)
+				if group is not None and assignment.weight > 0:
+					weights = shapeKeyWeights if group.name.startswith("SHAPEKEY_") else primaryWeights
+					weights.append((group, assignment.weight))
+			for bank in (primaryWeights, shapeKeyWeights):
+				bank.sort(key=lambda item: item[1], reverse=True)
+				for group, _ in bank[limit:]:
+					group.remove([vertex.index])
+		return
 	viewLayer = bpy.context.view_layer
 	previousActive = viewLayer.objects.active
 	previousSelection = list(bpy.context.selected_objects)
@@ -1659,7 +1676,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				if options.get("limitTotal", False):
 					limitTotalCount = max(1, min(32, int(options.get("limitTotalCount", maxWeightsPerVertexExtended))))
 					try:
-						limitTotalWeights(cloneObj, limitTotalCount)
+						limitTotalWeights(cloneObj, limitTotalCount, separateShapeKeyWeights=gameName == "DD2")
 						print(f"Limited total weights to {limitTotalCount} on {cloneObj.name}")
 					except Exception as err:
 						raiseWarning(f"Failed to limit total weights on {obj.name}. {str(err)}")
@@ -1908,6 +1925,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 						if g.group not in vertexGroupIndexToRemapDict:
 							continue
+						if gameName == "DD2" and g.group in shapeKeyGroupIndices and g.weight <= 0:
+							continue
 
 						if g.weight < MIN_WEIGHT and g.group not in shapeKeyGroupIndices:
 							continue
@@ -1932,10 +1951,12 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 								boneVertDict[parsedMesh.skeleton.weightedBones[remappedBoneIndex]].append(vertex.co)
 
 					if len(weightList) > maxWeightsPerVertex:
-						parsedMesh.bufferHasExtraWeight = True
+						if gameName != "DD2":
+							parsedMesh.bufferHasExtraWeight = True
 
 						if gameName not in EXTENDED_WEIGHT_GAMES:
-							addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
+							weightError = "MaxPrimaryWeightsPerVertexExceeded" if gameName == "DD2" else "MaxWeightsPerVertexExceeded"
+							addErrorToDict(errorDict, weightError, rawsubmesh.name)
 
 						extraWeightList = list(
 							pad(weightList[maxWeightsPerVertex:], size=8, padding=0.0)
@@ -1945,11 +1966,12 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 							pad(weightIndicesList[maxWeightsPerVertex:], size=8, padding=paddingValue)
 						)
 
-						if len(weightList) > maxWeightsPerVertexExtended:
+						if gameName != "DD2" and len(weightList) > maxWeightsPerVertexExtended:
 							addErrorToDict(errorDict, "ExtendedMaxWeightsPerVertexExceeded", rawsubmesh.name)
 
 					if len(secondaryWeightList) > maxWeightsPerVertex:
-						addErrorToDict(errorDict, "MaxWeightsPerVertexExceeded", rawsubmesh.name)
+						weightError = "MaxSecondaryWeightsPerVertexExceeded" if gameName == "DD2" else "MaxWeightsPerVertexExceeded"
+						addErrorToDict(errorDict, weightError, rawsubmesh.name)
 
 					weightList8 = list(
 						pad(weightList[:maxWeightsPerVertex], size=8, padding=0.0)
