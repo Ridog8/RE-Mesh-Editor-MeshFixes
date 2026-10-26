@@ -216,6 +216,7 @@ def setMeshExportDefaults(self):
 	self.splitLoopVertices = bpy.context.preferences.addons[__name__].preferences.default_splitLoopVertices
 	self.limitTotal = bpy.context.preferences.addons[__name__].preferences.default_limitTotal
 	self.normalizeWeights = bpy.context.preferences.addons[__name__].preferences.default_normalizeWeights
+	self.useLegacyWeightCutoff = bpy.context.preferences.addons[__name__].preferences.default_useLegacyWeightCutoff
 	self.useBlenderMaterialName = bpy.context.preferences.addons[__name__].preferences.default_useBlenderMaterialName
 	self.preserveBoneMatrices = bpy.context.preferences.addons[__name__].preferences.default_preserveBoneMatrices
 	self.exportBoundingBoxes = bpy.context.preferences.addons[__name__].preferences.default_exportBoundingBoxes
@@ -601,6 +602,10 @@ class REMeshPreferences(AddonPreferences):
 	   name = "Normalize Weights",
 	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
 	   default = True)
+	default_useLegacyWeightCutoff : BoolProperty(
+	   name = "Use Legacy 0.002 Weight Cutoff",
+	   description = "Legacy versions of the addon did not attempt to export weights < 0.002. This was supposed to be a fix, but also turning this off may not cause issues.",
+	   default = False)
 	default_useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",
@@ -696,6 +701,7 @@ class REMeshPreferences(AddonPreferences):
 			column2.prop(self,"default_splitLoopVertices")
 			column2.prop(self,"default_limitTotal")
 			column2.prop(self,"default_normalizeWeights")
+			column2.prop(self,"default_useLegacyWeightCutoff")
 			column2.prop(self, "default_rotate90export")
 			column2.prop(self, "default_useBlenderMaterialName")
 			column2.prop(self, "default_preserveBoneMatrices")
@@ -1066,6 +1072,10 @@ class ExportREMesh(Operator, ExportHelper):
 	   name = "Normalize Weights",
 	   description = "Normalize each set of vertex weights to 1.0 automatically/on export.",
 	   default = True)
+	useLegacyWeightCutoff : BoolProperty(
+	   name = "Use Legacy 0.002 Weight Cutoff",
+	   description = "Legacy versions of the addon did not attempt to export weights < 0.002. This was supposed to be a fix, but also turning this off may not cause issues.",
+	   default = False)
 	useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",
@@ -1172,6 +1182,7 @@ class ExportREMesh(Operator, ExportHelper):
 		limitRow.prop(self,"limitTotalCount", text="Max Weights")
 		row5 = layout.row()
 		row5.prop(self,"normalizeWeights")
+		layout.prop(self,"useLegacyWeightCutoff")
 		if self.filename_ext == ".241111606":
 					row = layout.row()
 					split = row.split(factor=0.48)
@@ -1217,6 +1228,7 @@ class ExportREMesh(Operator, ExportHelper):
 			"limitTotal": self.limitTotal,
 			"limitTotalCount": self.limitTotalCount,
 			"normalizeWeights": self.normalizeWeights,
+			"useLegacyWeightCutoff": self.useLegacyWeightCutoff,
 		}
 		editorVersion = str(bl_info["version"][0])+"."+str(bl_info["version"][1])
 		print(f"\n{textColors.BOLD}RE Mesh Editor V{editorVersion}{textColors.ENDC}")
@@ -1241,6 +1253,7 @@ class ExportREMesh(Operator, ExportHelper):
 				bpy.data.collections[self.targetCollection]["BatchExport_limitTotal"] = self.limitTotal
 				bpy.data.collections[self.targetCollection]["BatchExport_limitTotalCount"] = self.limitTotalCount
 				bpy.data.collections[self.targetCollection]["BatchExport_normalizeWeights"] = self.normalizeWeights
+				bpy.data.collections[self.targetCollection]["BatchExport_useLegacyWeightCutoff"] = self.useLegacyWeightCutoff
 				bpy.data.collections[self.targetCollection]["BatchExport_rotate90"] = self.rotate90
 				bpy.data.collections[self.targetCollection]["BatchExport_exportBlendShapes"] = self.exportBlendShapes
 				bpy.data.collections[self.targetCollection]["BatchExport_useBlenderMaterialName"] = self.useBlenderMaterialName

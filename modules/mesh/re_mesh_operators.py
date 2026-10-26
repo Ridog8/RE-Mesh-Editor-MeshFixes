@@ -276,6 +276,8 @@ def populateCollectionList(itemList,collection,recursionLevel,parentName):
 		
 		if collection["~TYPE"] == "RE_MESH_COLLECTION":
 			item.exportType = "MESH"
+			preferences = bpy.context.preferences.addons[__package__.split(".modules")[0]].preferences
+			item.useLegacyWeightCutoff = collection.get("BatchExport_useLegacyWeightCutoff", preferences.default_useLegacyWeightCutoff)
 			
 			if "BatchExport_exportAllLODs" in collection:
 				try:
@@ -368,6 +370,7 @@ class WM_OT_REBatchExporter(Operator):
 						exportAllLODs = exportItem.exportAllLODs,
 						autoSolveRepeatedUVs = exportItem.autoSolveRepeatedUVs,
 						preserveSharpEdges = exportItem.preserveSharpEdges,
+						useLegacyWeightCutoff = exportItem.useLegacyWeightCutoff,
 						rotate90 = exportItem.rotate90,
 						useBlenderMaterialName = exportItem.useBlenderMaterialName,
 						preserveBoneMatrices = exportItem.preserveBoneMatrices,
@@ -561,6 +564,7 @@ class WM_OT_REBatchExporter(Operator):
 					#box.prop(self, "exportBlendShapes")
 					box.prop(item,"autoSolveRepeatedUVs")
 					box.prop(item,"preserveSharpEdges")
+					box.prop(item,"useLegacyWeightCutoff")
 					box.prop(item, "rotate90")
 					box.prop(item, "useBlenderMaterialName")
 					box.prop(item, "preserveBoneMatrices")

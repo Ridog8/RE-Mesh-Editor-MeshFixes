@@ -103,6 +103,10 @@ class ExporterNodePropertyGroup(bpy.types.PropertyGroup):
 	   name = "Split Sharp Edges",
 	   description = "Edge splits all edges marked as sharp to preserve them on the exported mesh.\nNOTE: This will modify the exported mesh",
 	   default = True)
+	useLegacyWeightCutoff : BoolProperty(
+	   name = "Use Legacy 0.002 Weight Cutoff",
+	   description = "Legacy versions of the addon did not attempt to export weights < 0.002. This was supposed to be a fix, but also turning this off may not cause issues.",
+	   default = False)
 	useBlenderMaterialName : BoolProperty(
 	   name = "Use Blender Material Names",
 	   description = "If left unchecked, the exporter will get the material names to be used from the end of each object name. For example, if a mesh is named LOD_0_Group_0_Sub_0__Shirts_Mat, the material name is Shirts_Mat. If this option is enabled, the material name will instead be taken from the first material assigned to the object",

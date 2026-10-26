@@ -1328,6 +1328,7 @@ def exportREMeshFile(filePath,options):
 	maxWeightsPerVertex = 8
 	maxWeightsPerVertexExtended = 16
 	maxWeightedBones = 256
+	useLegacyWeightCutoff = options.get("useLegacyWeightCutoff", False)
 	SIX_WEIGHT_GAMES = set(["SF6","MHWILDS","PRAG","MHS3","ONIWOTS"])
 	EXTENDED_WEIGHT_GAMES = set(["MHWILDS","PRAG","MHS3","ONIWOTS",])#Games with support for extended weight buffers
 	if gameName in SIX_WEIGHT_GAMES:
@@ -1928,7 +1929,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						if gameName == "DD2" and g.group in shapeKeyGroupIndices and g.weight <= 0:
 							continue
 
-						if g.weight < MIN_WEIGHT and g.group not in shapeKeyGroupIndices:
+						if g.group not in shapeKeyGroupIndices and (g.weight <= 0 or (useLegacyWeightCutoff and g.weight < MIN_WEIGHT)):
 							continue
 
 						remappedBoneIndex = vertexGroupIndexToRemapDict[g.group]
