@@ -1,7 +1,9 @@
 """Monster Hunter Wilds blend-shape support for the unified RE Mesh exporter."""
 
 import copy
+import heapq
 import math
+import warnings
 import os
 import struct
 import zlib
@@ -230,6 +232,15 @@ def _exported_groups(lod, parsed_to_mesh_info):
 	return groups
 
 
+def _target_coverage_signature(target):
+	"""Compare Wilds targets by their VBI0 vertex ranges, not channel names."""
+	return tuple(sorted(
+		(int(entry.subMeshVertexStartIndex), int(entry.vertCount))
+		for entry in target.subMeshEntryList
+		if int(entry.vertCount) > 0
+	))
+
+
 def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 	"""Build active and inactive Wilds targets from Blender viscon groups."""
 	lods = _list_or_empty(
@@ -302,13 +313,13 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		inactive_targets = []
 		body_payload = bytearray()
 		body_channel_count = 0
+		first_target_by_coverage = {}
 
 		for group in active_groups:
 			shape_names = list(group["shapeNames"])
-			target = mesh_format.BlendTarget()
+			target = mesh_format.BlendTarget(mesh_format.VERSION_MHWILDS)
 			target.blendSSIndex = body_remap_base + body_channel_count
 			target.blendShapeNum = len(shape_names)
-			target.unkn0 = 0
 			target.unkn2 = 1
 			target.subMeshEntryList = []
 			for _parsed, mesh_info, vertex_count in group["submeshes"]:
@@ -321,6 +332,13 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 				entry.paramUnkn3 = 0
 				target.subMeshEntryList.append(entry)
 			target.subMeshEntryCount = len(target.subMeshEntryList)
+			coverage_signature = _target_coverage_signature(target)
+			targetCoverageIndex = first_target_by_coverage.setdefault(
+				coverage_signature, len(active_targets)
+			)
+			if targetCoverageIndex > 0xFFFF:
+				raise RuntimeError("Wilds target coverage index exceeds 16-bit range")
+			target.targetCoverageIndex = targetCoverageIndex
 
 			channel_deltas = []
 			aabb_sources = []
@@ -358,10 +376,10 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 			body_channel_count += len(shape_names)
 
 		for group in inactive_groups:
-			target = mesh_format.BlendTarget()
+			target = mesh_format.BlendTarget(mesh_format.VERSION_MHWILDS)
 			target.blendSSIndex = 0
 			target.blendShapeNum = 0
-			target.unkn0 = 0
+			target.targetCoverageIndex = 0
 			target.unkn2 = 0
 			target.subMeshEntryList = []
 			for _parsed, mesh_info, vertex_count in group["submeshes"]:
@@ -529,6 +547,97 @@ def _face_intervals(lod_range):
 	return intervals
 
 
+
+def _reorder_overflowing_canonical_faces(face_buffer, intervals, canonical, index_stride):
+	"""Keep each Wilds 1536-index face window within its 1024 canonical lanes."""
+	index_format = "<3I" if index_stride == 4 else "<3H"
+	changed_intervals = 0
+	for start, end, vertex_start in intervals:
+		count = end - start
+		if count < 3:
+			continue
+		if count % 3:
+			raise RuntimeError("Wilds canonical face interval is not triangle-aligned")
+		triangles = []
+		canonical_triangles = []
+		for coordinate in range(start, end, 3):
+			triangle = struct.unpack_from(index_format, face_buffer, coordinate * index_stride)
+			triangles.append(triangle)
+			canonical_triangles.append(tuple(
+				canonical[vertex_start + index]
+				if 0 <= vertex_start + index < len(canonical)
+				else vertex_start + index
+				for index in triangle
+			))
+
+		def window_unique_count(order, window_start):
+			return len({
+				value
+				for triangle_index in order[window_start:window_start + 512]
+				for value in canonical_triangles[triangle_index]
+			})
+
+		original_order = range(len(triangles))
+		if all(
+			window_unique_count(original_order, window_start) <= 1024
+			for window_start in range(0, len(triangles), 512)
+		):
+			continue
+
+		adjacent_triangles = {}
+		for triangle_index, vertices in enumerate(canonical_triangles):
+			for vertex in set(vertices):
+				adjacent_triangles.setdefault(vertex, []).append(triangle_index)
+
+		remaining = bytearray(b"\x01") * len(triangles)
+		order = []
+		first_remaining = 0
+		while len(order) < len(triangles):
+			window_vertices = set()
+			neighbor_scores = {}
+			candidates = []
+			for _ in range(min(512, len(triangles) - len(order))):
+				chosen = None
+				while candidates:
+					negative_score, triangle_index = heapq.heappop(candidates)
+					if remaining[triangle_index] and -negative_score == neighbor_scores.get(triangle_index, 0):
+						chosen = triangle_index
+						break
+				if chosen is None:
+					while first_remaining < len(triangles) and not remaining[first_remaining]:
+						first_remaining += 1
+					chosen = first_remaining
+				remaining[chosen] = 0
+				order.append(chosen)
+				for vertex in set(canonical_triangles[chosen]) - window_vertices:
+					window_vertices.add(vertex)
+					for neighbor in adjacent_triangles[vertex]:
+						if remaining[neighbor]:
+							score = neighbor_scores.get(neighbor, 0) + 1
+							neighbor_scores[neighbor] = score
+							heapq.heappush(candidates, (-score, neighbor))
+			if len(window_vertices) > 1024:
+				warnings.warn(
+					f"Wilds canonical triangle ordering could not fit face interval "
+					f"[{start}, {end}) into 1024 lanes per 1536-index window "
+					f"({len(window_vertices)} unique IDs in one attempted window). "
+					"Original triangle order retained; shading may be incorrect.",
+					RuntimeWarning,
+					stacklevel=2,
+				)
+				break
+		else:
+			for triangle_index, source_index in enumerate(order):
+				struct.pack_into(
+					index_format, face_buffer,
+					(start + 3 * triangle_index) * index_stride,
+					*triangles[source_index],
+				)
+			changed_intervals += 1
+	if changed_intervals:
+		print(f"Wilds canonical face ordering: reordered {changed_intervals} overflowing intervals")
+
+
 def _canonical_tables(
 	re_mesh,
 	lod_index,
@@ -638,6 +747,7 @@ def _canonical_tables(
 
 	index_format = "<I" if re_mesh.lodHeader.has32BitIndexBuffer else "<H"
 	index_stride = 4 if re_mesh.lodHeader.has32BitIndexBuffer else 2
+	_reorder_overflowing_canonical_faces(local_faces, intervals, canonical, index_stride)
 	coordinate_count = max(end for _start, end, _vertex in intervals)
 	face_values = [0] * coordinate_count
 	canonical_face_vertices = [0] * coordinate_count
@@ -1142,16 +1252,18 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	)
 	if use_tables:
 		global_range = _global_resource_range(re_mesh)
+		face_buffer = bytearray(mesh_header.faceBuffer)
 		face_table, vertex_table = _canonical_tables(
 			re_mesh,
 			0,
-			bytes(mesh_header.faceBuffer),
+			face_buffer,
 			visual,
 			elements,
 			global_range,
 			source_vertex_indices=plan.get("sourceVertexIndices"),
 			source_identity_reliable=plan.get("sourceIdentityReliable"),
 		)
+		mesh_header.faceBuffer = face_buffer
 	else:
 		face_table, vertex_table = b"", b""
 

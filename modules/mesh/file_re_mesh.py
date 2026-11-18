@@ -1260,15 +1260,17 @@ class BlendSubMesh():
 		write_uint(file, self.paramUnkn3)
 
 class BlendTarget():
-	def __init__(self):
+	def __init__(self, version=None):
 		self.subMeshVertexStartIndex = 0
 		self.vertCount = 0
 		self.blendSSIndex = 0
 		self.blendShapeNum = 0
 		self.deltaOffset = 0
 		
-		#sf6 changes
-		self.unkn0 = 0
+		if version == VERSION_MHWILDS:
+			self.targetCoverageIndex = 0
+		else:
+			self.unkn0 = 0
 		self.subMeshEntryCount = 0
 		self.unkn2 = 0
 		self.subMeshEntryOffset = 0
@@ -1285,7 +1287,10 @@ class BlendTarget():
 		else:
 			self.blendSSIndex = read_ushort(file)
 			self.blendShapeNum = read_ushort(file)
-			self.unkn0 = read_ushort(file)
+			if version == VERSION_MHWILDS:
+				self.targetCoverageIndex = read_ushort(file)
+			else:
+				self.unkn0 = read_ushort(file)
 			self.subMeshEntryCount = read_ubyte(file)
 			self.unkn2 = read_ubyte(file)
 			self.subMeshEntryOffset = read_uint64(file)
@@ -1308,7 +1313,10 @@ class BlendTarget():
 		else:
 			write_ushort(file, self.blendSSIndex)
 			write_ushort(file, self.blendShapeNum)
-			write_ushort(file, self.unkn0)
+			if version == VERSION_MHWILDS:
+				write_ushort(file, self.targetCoverageIndex)
+			else:
+				write_ushort(file, self.unkn0)
 			write_ubyte(file, self.subMeshEntryCount)
 			write_ubyte(file, self.unkn2)
 			write_uint64(file, self.subMeshEntryOffset)
@@ -1343,7 +1351,7 @@ class BlendShapeData():
 			serializedTargetCount += int(self.typing)
 		file.seek(self.dataOffset)
 		for i in range(0,serializedTargetCount):
-			blendTargetEntry = BlendTarget()
+			blendTargetEntry = BlendTarget(version)
 			blendTargetEntry.read(file,version)
 			self.blendTargetList.append(blendTargetEntry)
 		file.seek(self.aabbOffset)#TODO FIX WRITE
@@ -2074,11 +2082,11 @@ def WriteToFaceBuffer(bufferStream,faceList):
 	if (len(data))%4 != 0:#Align face buffer to 4 bytes per submesh
 		data += b'\x00\x00'
 	bufferStream.write(data)
-def WriteToIntFaceBuffer(bufferStream,faceList):
+def WriteToIntFaceBuffer(bufferStream,faceList,padToEven=False):
 	data = struct.pack(f'{len(faceList)*3}I', *chain.from_iterable(faceList))
 	
-	#if (len(data))%4 != 0:#Align face buffer to 4 bytes per submesh
-		#data += b'\x00\x00\x00\x00'
+	if padToEven and len(data)%8 != 0:
+		data += b'\x00\x00\x00\x00'
 	bufferStream.write(data)
 
 class sizeData:
@@ -2213,7 +2221,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 					subMesh = MaterialSubdivision()
 					subMesh.materialIndex = parsedSubMesh.materialIndex
 					subMesh.faceCount = len(parsedSubMesh.faceList) * 3
-					if parsedMesh.bufferHasIntFaces:
+					if parsedMesh.bufferHasIntFaces and version != VERSION_MHWILDS:
 						paddedFaceCount = subMesh.faceCount
 					else:
 						paddedFaceCount = getPaddedPos(subMesh.faceCount, 2)
@@ -2262,7 +2270,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						if parsedSubMesh.colorList is not None:
 							WriteToColorBuffer(colorBuffer,parsedSubMesh.colorList)
 						if parsedMesh.bufferHasIntFaces:
-							WriteToIntFaceBuffer(faceBuffer,parsedSubMesh.faceList)
+							WriteToIntFaceBuffer(faceBuffer,parsedSubMesh.faceList,padToEven = version == VERSION_MHWILDS)
 						else:
 							WriteToFaceBuffer(faceBuffer,parsedSubMesh.faceList)
 					else:

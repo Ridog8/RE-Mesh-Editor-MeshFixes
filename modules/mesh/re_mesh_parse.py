@@ -473,8 +473,7 @@ def _parseLODStructureWithBlendShapes(
 	lodList = []
 	useSymmetricScale = True
 	for lodIndex, lodGroup in enumerate(targetLODList):
-		blendShapeDict = {}
-		usedBlendGroupIndices = set()
+		blendShapeRanges = []
 		blendData = None
 		if (
 			reMesh.blendShapeHeader is not None
@@ -484,192 +483,82 @@ def _parseLODStructureWithBlendShapes(
 
 		if blendData is not None:
 			# Current blendshape parsing is enabled only for Wilds.
-			reader = ReadBlendShapeType7Buffer
-			vertexBufferIndex = 0
 			targets = list(getattr(blendData, "blendTargetList", []) or [])
-			if targets:
-				entries = list(
-					getattr(targets[0], "subMeshEntryList", []) or []
-				)
-				if entries:
-					targetStart = entries[0].subMeshVertexStartIndex
-					for meshGroup in lodGroup.meshGroupList:
-						for meshInfo in meshGroup.vertexInfoList:
-							if meshInfo.vertexStartIndex == targetStart:
-								vertexBufferIndex = meshInfo.vertexBufferIndex
-								break
-			buffer = b""
-			if (
-				blendShapeBufferList is not None
-				and vertexBufferIndex < len(blendShapeBufferList)
-			):
-				buffer = blendShapeBufferList[vertexBufferIndex]
-			decoded = (
-				reader(buffer, set())
-				if reader is not None
-				else np.zeros((0, 3), dtype=np.float32)
-			)
 			activeCount = min(
 				int(getattr(blendData, "targetCount", 0) or 0),
 				len(targets),
 				len(getattr(blendData, "aabbList", []) or []),
 			)
-			def mergedIntervals(intervals):
-				merged = []
-				for start, end in sorted(intervals):
-					if merged and start <= merged[-1][1]:
-						merged[-1] = (
-							merged[-1][0],
-							max(merged[-1][1], end),
-						)
-					else:
-						merged.append((start, end))
-				return tuple(merged)
-
-			groupIntervals = []
+			renderRanges = []
 			for meshGroup in lodGroup.meshGroupList:
 				meshInfos = list(meshGroup.vertexInfoList)
-				intervals = []
 				for infoIndex, meshInfo in enumerate(meshInfos):
 					start = int(meshInfo.vertexStartIndex)
 					end = (
 						int(meshInfos[infoIndex + 1].vertexStartIndex)
 						if infoIndex + 1 < len(meshInfos)
-						else int(meshInfos[0].vertexStartIndex)
-						+ int(meshGroup.vertexCount)
+						else int(meshInfos[0].vertexStartIndex) + int(meshGroup.vertexCount)
 					)
-					intervals.append((start, end))
-				groupIntervals.append(mergedIntervals(intervals))
-			targetGroupMap = {}
-			claimedGroups = set()
-			for targetRecordIndex, targetRecord in enumerate(targets):
-				targetEntries = list(
-					getattr(targetRecord, "subMeshEntryList", []) or []
-				)
-				targetIntervals = mergedIntervals([
-					(
-						int(entry.subMeshVertexStartIndex),
-						int(entry.subMeshVertexStartIndex)
-						+ int(entry.vertCount),
-					)
-					for entry in targetEntries
-				])
-				exactCandidates = [
-					index
-					for index, intervals in enumerate(groupIntervals)
-					if intervals == targetIntervals
-				]
-				available = [
-					index
-					for index in exactCandidates
-					if index not in claimedGroups
-				]
-				if available:
-					targetGroupMap[targetRecordIndex] = available[0]
-					claimedGroups.add(available[0])
-			payloadCursor = 0
+					if end > start:
+						renderRanges.append((int(meshInfo.vertexBufferIndex), start, end))
+			decodedByBuffer = {}
+			payloadCursorByBuffer = {}
 			for targetIndex, target in enumerate(targets[:activeCount]):
-				entries = list(
-					getattr(target, "subMeshEntryList", []) or []
-				)
-				targetGroupIndex = None
-				if targetIndex in targetGroupMap:
-					targetGroupIndex = targetGroupMap[targetIndex]
-					usedBlendGroupIndices.add(targetGroupIndex)
-				elif entries:
-					targetStarts = {
-						int(entry.subMeshVertexStartIndex)
-						for entry in entries
-					}
-					candidates = []
-					for groupIndex, meshGroup in enumerate(
-						lodGroup.meshGroupList
-					):
-						groupStarts = {
-							int(meshInfo.vertexStartIndex)
-							for meshInfo in meshGroup.vertexInfoList
-						}
-						if targetStarts.issubset(groupStarts):
-							candidates.append(groupIndex)
-					unusedCandidates = [
-						index
-						for index in candidates
-						if index not in usedBlendGroupIndices
-					]
-					if unusedCandidates:
-						targetGroupIndex = unusedCandidates[0]
-					elif candidates:
-						targetGroupIndex = candidates[0]
-					if targetGroupIndex is not None:
-						usedBlendGroupIndices.add(targetGroupIndex)
-				channelCount = int(
-					getattr(target, "blendShapeNum", 0) or 0
-				)
+				entries = list(getattr(target, "subMeshEntryList", []) or [])
+				channelCount = int(getattr(target, "blendShapeNum", 0) or 0)
 				if channelCount <= 0:
 					continue
-				if entries:
-					targetRowCount = sum(
-						int(entry.vertCount) for entry in entries
+				coverageByBuffer = {}
+				for entry in entries:
+					entryStart = int(entry.subMeshVertexStartIndex)
+					entryEnd = entryStart + int(entry.vertCount)
+					for bufferIndex, start, end in renderRanges:
+						overlap = max(0, min(entryEnd, end) - max(entryStart, start))
+						if overlap:
+							coverageByBuffer[bufferIndex] = coverageByBuffer.get(bufferIndex, 0) + overlap
+				vertexBufferIndex = max(coverageByBuffer, key=coverageByBuffer.get) if coverageByBuffer else 0
+				if vertexBufferIndex not in decodedByBuffer:
+					buffer = (
+						blendShapeBufferList[vertexBufferIndex]
+						if blendShapeBufferList is not None and vertexBufferIndex < len(blendShapeBufferList)
+						else b""
 					)
-				else:
-					targetRowCount = int(target.vertCount)
-				useExplicitOffsets = any(
-					int(getattr(entry, "vertOffset", 0) or 0) != 0
-					for entry in entries
-				)
+					decodedByBuffer[vertexBufferIndex] = ReadBlendShapeType7Buffer(buffer, set())
+				decoded = decodedByBuffer[vertexBufferIndex]
+				targetRowCount = sum(int(entry.vertCount) for entry in entries) if entries else int(target.vertCount)
+				useExplicitOffsets = any(int(getattr(entry, "vertOffset", 0) or 0) != 0 for entry in entries)
+				payloadCursor = payloadCursorByBuffer.get(vertexBufferIndex, 0)
 				for channelIndex in range(channelCount):
-					remapIndex = (
-						int(getattr(target, "blendSSIndex", 0) or 0)
-						+ channelIndex
-					)
-					if remapIndex >= len(reMesh.blendShapeNameRemapList):
+					remapIndex = int(getattr(target, "blendSSIndex", 0) or 0) + channelIndex
+					if remapIndex < 0 or remapIndex >= len(reMesh.blendShapeNameRemapList):
 						continue
 					rawNameIndex = reMesh.blendShapeNameRemapList[remapIndex]
-					if rawNameIndex >= len(reMesh.rawNameList):
+					if rawNameIndex < 0 or rawNameIndex >= len(reMesh.rawNameList):
 						continue
 					shapeName = reMesh.rawNameList[rawNameIndex]
 					if entries:
 						running = 0
 						for entry in entries:
-							start = (
-								int(entry.vertOffset)
-								+ channelIndex * targetRowCount
-								if useExplicitOffsets
-								else payloadCursor
-								+ channelIndex * targetRowCount
-								+ running
-							)
+							rowStart = (int(entry.vertOffset) if useExplicitOffsets else payloadCursor + running) + channelIndex * targetRowCount
 							count = int(entry.vertCount)
-							deltas = decoded[start:start + count].copy()
 							deltas = ApplyBlendShapeAABBToDecodedRows(
-								deltas,
-								blendData.aabbList[targetIndex],
-								blendData.typing,
-								useSymmetricScale,
+								decoded[rowStart:rowStart + count].copy(),
+								blendData.aabbList[targetIndex], blendData.typing, useSymmetricScale,
 							)
-							shape = BlendShape()
-							shape.blendShapeName = shapeName
-							shape.deltas = deltas
-							blendShapeDict.setdefault((
-								targetGroupIndex,
-								int(entry.subMeshVertexStartIndex),
-							), []).append(shape)
+							if len(deltas) != count:
+								raise ValueError(f"Incomplete MHWILDS blendshape data for {shapeName}: expected {count} rows, got {len(deltas)}")
+							blendShapeRanges.append((vertexBufferIndex, int(entry.subMeshVertexStartIndex), shapeName, deltas))
 							running += count
 					else:
-						start = payloadCursor + channelIndex * targetRowCount
-						shape = BlendShape()
-						shape.blendShapeName = shapeName
-						shape.deltas = ApplyBlendShapeAABBToDecodedRows(
-							decoded[start:start + targetRowCount].copy(),
-							blendData.aabbList[targetIndex],
-							blendData.typing,
-							useSymmetricScale,
+						rowStart = payloadCursor + channelIndex * targetRowCount
+						deltas = ApplyBlendShapeAABBToDecodedRows(
+							decoded[rowStart:rowStart + targetRowCount].copy(),
+							blendData.aabbList[targetIndex], blendData.typing, useSymmetricScale,
 						)
-						blendShapeDict.setdefault((
-							targetGroupIndex,
-							int(target.subMeshVertexStartIndex),
-						), []).append(shape)
-				payloadCursor += targetRowCount * channelCount
+						if len(deltas) != targetRowCount:
+							raise ValueError(f"Incomplete MHWILDS blendshape data for {shapeName}: expected {targetRowCount} rows, got {len(deltas)}")
+						blendShapeRanges.append((vertexBufferIndex, int(target.subMeshVertexStartIndex), shapeName, deltas))
+				payloadCursorByBuffer[vertexBufferIndex] = payloadCursor + targetRowCount * channelCount
 
 		lod = LODLevel()
 		lod.lodDistance = lodGroup.distance
@@ -769,12 +658,22 @@ def _parseLODStructureWithBlendShapes(
 							weightDestination,
 							vertexDict[field][1][start:bufferEnd],
 						)
-				submesh.blendShapeList.extend(blendShapeDict.get(
-					(meshGroupIndex, int(meshInfo.vertexStartIndex)),
-					blendShapeDict.get(
-						(None, int(meshInfo.vertexStartIndex)), []
-					),
-				))
+				shapeDeltas = {}
+				for rangeBuffer, rangeStart, shapeName, deltas in blendShapeRanges:
+					if rangeBuffer != int(meshInfo.vertexBufferIndex):
+						continue
+					overlapStart = max(int(start), rangeStart)
+					overlapEnd = min(int(bufferEnd), rangeStart + len(deltas))
+					if overlapStart >= overlapEnd:
+						continue
+					if shapeName not in shapeDeltas:
+						shapeDeltas[shapeName] = np.zeros((inferredVertexCount, 3), dtype=np.float32)
+					shapeDeltas[shapeName][overlapStart - int(start):overlapEnd - int(start)] += deltas[overlapStart - rangeStart:overlapEnd - rangeStart]
+				for shapeName, deltas in shapeDeltas.items():
+					shape = BlendShape()
+					shape.blendShapeName = shapeName
+					shape.deltas = deltas
+					submesh.blendShapeList.append(shape)
 				group.subMeshList.append(submesh)
 			lod.visconGroupList.append(group)
 		lodList.append(lod)
