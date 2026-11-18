@@ -1,6 +1,8 @@
 #Author: NSA Cloud
 import bpy
+import bmesh
 import os
+import numpy as np
 from bpy.types import Operator
 
 from bpy.props import (StringProperty,
@@ -11,6 +13,8 @@ from bpy.props import (StringProperty,
                        EnumProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
+from .file_re_mesh import PackUVsToHalf
+from .re_mesh_parse import ReadUVBuffer
 from .re_mesh_propertyGroups import ExporterNodePropertyGroup,MESH_UL_REExporterList
 from ..gen_functions import splitNativesPath
 from ..blender_utils import showErrorMessageBox
@@ -592,6 +596,76 @@ class WM_OT_SolveRepeatedUVs(Operator):
 			self.report({"INFO"},"Solved repeated UVs on selected objects.")
 		return {'FINISHED'}
 	
+class WM_OT_QuantizeUVsTo16Bit(Operator):
+	bl_label = "Quantize UVs to 16 bit"
+	bl_idname = "re_mesh.quantize_uvs_16bit"
+	bl_description = "Quantizes UVs to that of the .mesh format for a 1:1 preview"
+	bl_options = {'REGISTER', 'UNDO'}
+
+	@classmethod
+	def poll(cls, context):
+		obj = context.active_object
+		return (context.area is not None and context.area.type == 'IMAGE_EDITOR'
+			and context.area.ui_type == 'UV' and context.mode == 'EDIT_MESH'
+			and obj is not None and obj.type == 'MESH'
+			and obj.data.uv_layers.active is not None)
+
+	def execute(self, context):
+		pending = []
+		syncSelection = context.scene.tool_settings.use_uv_select_sync
+		separateUVSelection = hasattr(bmesh.types.BMLoop, 'uv_select_vert')
+		for obj in context.objects_in_mode_unique_data:
+			if obj.type != 'MESH':
+				continue
+			bm = bmesh.from_edit_mesh(obj.data)
+			uvLayer = bm.loops.layers.uv.active
+			if uvLayer is None:
+				continue
+			if syncSelection and (not separateUVSelection or not bm.uv_select_sync_valid):
+				isSelected = lambda loop: loop.vert.select
+			elif separateUVSelection:
+				isSelected = lambda loop: (syncSelection or loop.face.select) and loop.uv_select_vert
+			else:
+				isSelected = lambda loop: loop.face.select and loop[uvLayer].select
+			loops = [loop for face in bm.faces if not face.hide
+				for loop in face.loops if not loop.vert.hide and isSelected(loop)]
+			if not loops:
+				continue
+			values = np.asarray([tuple(loop[uvLayer].uv) for loop in loops], dtype=np.float32)
+			if not np.isfinite(values).all():
+				self.report({'WARNING'}, "Selected UVs contain non-finite values. No UVs were changed.")
+				return {'CANCELLED'}
+			with np.errstate(over='ignore'):
+				packed = PackUVsToHalf(values)
+			if not np.isfinite(packed).all():
+				self.report({'WARNING'}, "Selected UVs exceed the finite 16-bit range. No UVs were changed.")
+				return {'CANCELLED'}
+			quantized = np.asarray(ReadUVBuffer(packed.tobytes(), set()), dtype=np.float32)
+			uvVertices = [(loop.vert, float(uv[0]), float(uv[1])) for loop, uv in zip(loops, values)]
+			changed = np.any(values != quantized, axis=1)
+			selectedCount = len(set(uvVertices))
+			changedCount = len({vertex for vertex, differs in zip(uvVertices, changed) if differs})
+			pending.append((obj.data, bm, uvLayer, loops, quantized, selectedCount, changedCount))
+		if not pending:
+			self.report({'WARNING'}, "No UVs selected in the active UV map.")
+			return {'CANCELLED'}
+		count = 0
+		changedCount = 0
+		changedMeshes = 0
+		for mesh, bm, uvLayer, loops, quantized, selectedCount, meshChangedCount in pending:
+			for loop, uv in zip(loops, quantized):
+				loop[uvLayer].uv = tuple(uv)
+			count += selectedCount
+			changedCount += meshChangedCount
+			changedMeshes += int(meshChangedCount > 0)
+			bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
+		context.area.tag_redraw()
+		self.report({'INFO'}, (
+			f"Quantized {count} selected UV vertices across {len(pending)} meshes. "
+			f"{changedCount} UV vertex positions changed across {changedMeshes} meshes."
+		))
+		return {'FINISHED'}
+
 class WM_OT_QuickBatchExport(Operator):
 	bl_label = "Quick Batch Export"
 	bl_idname = "re_mesh.quick_batch_export"

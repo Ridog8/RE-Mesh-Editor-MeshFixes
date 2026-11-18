@@ -41,6 +41,20 @@ class OBJECT_PT_MeshObjectModePanel(Panel):
 		layout.operator("re_mesh.batch_exporter",icon = "OUTLINER_OB_GROUP_INSTANCE")
 		#layout.operator("re_mesh.quick_batch_export",icon = "OUTLINER_OB_GROUP_INSTANCE")#TODO FIX
 		
+class IMAGE_PT_REMeshUVPanel(Panel):
+	bl_label = "RE Mesh UV"
+	bl_idname = "IMAGE_PT_re_mesh_uv"
+	bl_space_type = "IMAGE_EDITOR"
+	bl_region_type = "UI"
+	bl_category = "RE Mesh UV"
+
+	@classmethod
+	def poll(cls, context):
+		return context.area is not None and context.area.ui_type == 'UV'
+
+	def draw(self, context):
+		self.layout.operator("re_mesh.quantize_uvs_16bit")
+
 class OBJECT_PT_MeshArmatureToolsPanel(Panel):
 	bl_label = "Armature Tools"
 	bl_idname = "OBJECT_PT_mesh_armature_tools_panel"

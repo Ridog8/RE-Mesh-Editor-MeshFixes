@@ -36,10 +36,12 @@ from .modules.mesh.re_mesh_operators import (
 	WM_OT_CreateMeshCollection,
 	WM_OT_REBatchExporter,
 	WM_OT_SolveRepeatedUVs,
+	WM_OT_QuantizeUVsTo16Bit,
 	WM_OT_QuickBatchExport,
 
 )
 from .modules.mesh.ui_re_mesh_panels import (
+	IMAGE_PT_REMeshUVPanel,
 	OBJECT_PT_MeshObjectModePanel,
 	OBJECT_PT_MeshArmatureToolsPanel,
 	OBJECT_PT_REAssetExtensionPanel,
@@ -1720,6 +1722,7 @@ classes = [
 	MESH_UL_REExporterList,
 	WM_OT_REBatchExporter,
 	WM_OT_SolveRepeatedUVs,
+	WM_OT_QuantizeUVsTo16Bit,
 	WM_OT_QuickBatchExport,
 	
 	#mdf
@@ -1749,6 +1752,7 @@ classes = [
 	OBJECT_PT_MeshObjectModePanel,
 	OBJECT_PT_MeshArmatureToolsPanel,
 	OBJECT_PT_MDFMaterialPanel,
+	IMAGE_PT_REMeshUVPanel,
 	OBJECT_PT_MDFFlagsPanel,
 	OBJECT_PT_MDFMaterialTextureBindingListPanel,
 	OBJECT_PT_MDFMaterialPropertyListPanel,
