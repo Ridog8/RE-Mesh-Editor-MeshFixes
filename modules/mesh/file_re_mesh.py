@@ -1910,13 +1910,13 @@ def WriteToNorTanBufferOld(bufferStream,normalList,vertexPosList,uvList,faceList
 	
 	bufferStream.write(norTanArray.tobytes())
 
+def PackUVsToHalf(uvList):
+	uvArray = np.array(uvList, dtype=np.float64, copy=True).reshape((-1, 2))
+	uvArray[:, 1] = 1.0 - uvArray[:, 1]
+	return uvArray.astype("<e")
+
 def WriteToUVBuffer(bufferStream,uvList):
-	uvArray = np.array(uvList,dtype = np.dtype("<e"))
-	uvArray = uvArray.flatten()
-	uvArray[1::2] *= -1
-	uvArray[1::2] += 1
-	#print(uvArray)
-	bufferStream.write(uvArray.tobytes())
+	bufferStream.write(PackUVsToHalf(uvList).tobytes())
 
 def QuantizeWeightArrayToBytes(boneWeightsArray, normalizeWeights=True):
 	# Helper function specifically for quantizing weight arrays to bytes and including the automatic pre-normalization option,

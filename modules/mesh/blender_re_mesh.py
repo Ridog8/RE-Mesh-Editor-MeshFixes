@@ -19,7 +19,7 @@ import os
 from math import radians,floor,sqrt
 from mathutils import Vector,Matrix
 from itertools import chain, repeat, islice
-from .file_re_mesh import readREMesh,writeREMesh,ParsedREMeshToREMesh,Sphere,AABB,Matrix4x4,meshFileVersionToGameNameDict
+from .file_re_mesh import readREMesh,writeREMesh,ParsedREMeshToREMesh,Sphere,AABB,Matrix4x4,meshFileVersionToGameNameDict,PackUVsToHalf
 from .re_mesh_parse import ParsedREMesh,VisconGroup,LODLevel,SubMesh,ParsedBone,Skeleton,BlendShape
 from ..mdf.file_re_mdf import readMDF
 from ..mdf.blender_re_mesh_mdf import findMDFPathFromMeshPath,importMDF
@@ -1994,6 +1994,14 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 				if splitLoopVertices:
 					exportVertexMap = {}
+					packedUVKeys = []
+					for layerIndex, hasLayer in enumerate((meshHasUV, meshHasUV2)):
+						if hasLayer:
+							loopUVs = np.empty(len(evaluatedSubMeshData.loops) * 2, dtype=np.float32)
+							evaluatedSubMeshData.uv_layers[layerIndex].data.foreach_get("uv", loopUVs)
+							packedUVKeys.append(PackUVsToHalf(loopUVs).view("<u4").reshape(-1))
+						else:
+							packedUVKeys.append(None)
 
 					outPositions = []
 					outNormals = []
@@ -2038,7 +2046,12 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 							color = evaluatedSubMeshData.vertex_colors[0].data[loopIndex].color if meshHasColor else None
 
 							# Splitting if the loop normal, UV, tangent, or color attrib. is different.
-							exportKey = (srcVertIndex,	_round_tuple(normal), tangentPacked, _round_tuple(uv0) if uv0 is not None else None, _round_tuple(uv1) if uv1 is not None else None, _round_tuple(color) if color is not None else None,)
+							exportKey = (
+								srcVertIndex, _round_tuple(normal), tangentPacked,
+								int(packedUVKeys[0][loopIndex]) if meshHasUV else None,
+								int(packedUVKeys[1][loopIndex]) if meshHasUV2 else None,
+								_round_tuple(color) if color is not None else None,
+							)
 
 							if exportKey not in exportVertexMap:
 								newExportIndex = len(outPositions)

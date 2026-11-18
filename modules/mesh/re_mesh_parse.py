@@ -82,12 +82,8 @@ def ReadNorTanBuffer(norTanBuffer,tags):
 	return (normalList, tangentList, normalGroupList)
 
 def ReadUVBuffer(uvBuffer,tags):
-	#uvArray = np.frombuffer(uvBuffer,dtype="<2e",)
-	uvArray = np.frombuffer(bytearray(uvBuffer),dtype="<e",)#Convert bytes to bytearray to make numpy array mutable
-	#Do (1-x) to v value
-	uvArray[1::2] *= -1
-	uvArray[1::2] += 1
-	uvArray = uvArray.reshape((-1,2))
+	uvArray = np.frombuffer(uvBuffer, dtype="<e").astype(np.float64).reshape((-1, 2))
+	uvArray[:, 1] = 1.0 - uvArray[:, 1]
 	return uvArray.tolist()
 
 def ReadWeightBuffer(weightBuffer,tags):
