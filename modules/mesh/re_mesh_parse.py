@@ -40,6 +40,7 @@ typeStrideDict = {
 	"NorTan":8,
 	"UV":4,
 	"UV2":4,
+	"UV3":4,
 	"Weight":16,
 	"Color":4,
 	"ExtraWeight":16,
@@ -192,6 +193,7 @@ BufferReadDict = {
 	"NorTan":ReadNorTanBuffer,
 	"UV":ReadUVBuffer,
 	"UV2":ReadUVBuffer,
+	"UV3":ReadUVBuffer,
 	"Weight":ReadWeightBuffer,
 	"Color":ReadColorBuffer,
 	"SF6UnknownVertexDataType":ReadColorBuffer,#Read as color data for now until what it is can be determined
@@ -248,6 +250,7 @@ def ReadVertexElementBuffers(vertexElementList,vertexBuffer,tagSet):
 		"NorTan":None,
 		"UV":None,
 		"UV2":None,
+		"UV3":None,
 		"Weight":None,
 		"Color":None,
 		"SF6UnknownVertexDataType":None,
@@ -263,6 +266,10 @@ def ReadVertexElementBuffers(vertexElementList,vertexBuffer,tagSet):
 		else:
 			bufferEnd = vertexElementList[index+1].posStartOffset
 		elementName = typeNameMapping[vertexElement.typing]
+		if vertexElement.typing == 6 and "RE9" in tagSet:
+			if vertexElement.stride != 4:
+				raise ValueError("RE9 third UV elements must have a 4-byte stride")
+			elementName = "UV3"
 		#print(f"{elementName} start {str(vertexElement.posStartOffset)} end {str(bufferEnd)} size {str(bufferEnd-vertexElement.posStartOffset)}")
 		#print(elementName)
 
@@ -322,6 +329,7 @@ class SubMesh:
 		self.normalPivot255List = []
 		self.uvList = []
 		self.uv2List = []
+		self.uv3List = []
 		self.faceList = []
 		self.weightList = []
 		self.weightIndicesList = []
@@ -432,6 +440,8 @@ def _parseLODStructureWithoutBlendShapes(
 					submesh.uvList = vertexDict["UV"][start:bufferEnd]
 				if vertexDict["UV2"] is not None:
 					submesh.uv2List = vertexDict["UV2"][start:bufferEnd]
+				if vertexDict["UV3"] is not None:
+					submesh.uv3List = vertexDict["UV3"][start:bufferEnd]
 				if vertexDict["Weight"] is not None:
 					submesh.weightIndicesList = vertexDict["Weight"][0][start:bufferEnd]
 					submesh.weightList = vertexDict["Weight"][1][start:bufferEnd]
@@ -622,6 +632,7 @@ def _parseLODStructureWithBlendShapes(
 				for field, destination in (
 					("UV", "uvList"),
 					("UV2", "uv2List"),
+					("UV3", "uv3List"),
 					("Color", "colorList"),
 				):
 					if vertexDict[field] is not None:
@@ -881,6 +892,7 @@ class ParsedREMesh:
 		self.bufferHasNorTan = False
 		self.bufferHasUV = False
 		self.bufferHasUV2 = False
+		self.bufferHasUV3 = False
 		self.bufferHasWeight = False
 		self.bufferHasColor = False
 		self.bufferHasIntFaces = False
@@ -946,6 +958,8 @@ class ParsedREMesh:
 		#Parse Vertex Buffer
 		if reMesh.meshBufferHeader != None:
 			tags = set()
+			if reMesh.fileHeader.version == 250904410:
+				tags.add("RE9")
 			if reMesh.meshVersion in SIX_WEIGHT_MESH_VERSIONS or reMesh.fileHeader.version == 250707828:#Street Fighter 6 mesh version + MH Wilds, #Pragmata internal mesh version uses 6 weight but RE9 uses 8
 				tags.add("SixWeightCompressed")#Add tag to parse compressed weights
 			if reMesh.meshVersion == VERSION_ONIWOTS:
@@ -1015,6 +1029,7 @@ class ParsedREMesh:
 						)
 					usedVertexOffsetDictList.append(dict())
 			
+			self.bufferHasUV3 = any(vertexDict["UV3"] is not None for vertexDict in vertexDictList)
 			usedVertexOffsetDictList.append(dict())
 			while len(usedVertexOffsetDictList) < len(vertexDictList):
 				usedVertexOffsetDictList.append(dict())

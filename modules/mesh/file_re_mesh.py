@@ -2145,6 +2145,8 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	norTanBuffer = BytesIO()
 	UVBuffer = BytesIO()
 	UV2Buffer = BytesIO()
+	UV3Buffer = BytesIO()
+	exportUV3 = version == VERSION_RE9 and parsedMesh.bufferHasUV3
 	weightBuffer = BytesIO()
 	colorBuffer = BytesIO()
 	faceBuffer = BytesIO()
@@ -2186,7 +2188,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 			reMesh.lodHeader.skinWeightCount = 27#
 		elif version == VERSION_RE9:
 			reMesh.lodHeader.skinWeightCount = 18#
-		if parsedMesh.bufferHasUV2:#This is wrong, uv count is determined by something else. However uv count is unused by the game so it doesn't really matter
+		if exportUV3:
+			reMesh.lodHeader.uvCount = 3
+		elif parsedMesh.bufferHasUV2:#This is wrong, uv count is determined by something else. However uv count is unused by the game so it doesn't really matter
 			reMesh.lodHeader.uvCount = 2
 		else:
 			reMesh.lodHeader.uvCount = 1
@@ -2251,6 +2255,13 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 						WriteToUVBuffer(UVBuffer,parsedSubMesh.uvList)
 						if parsedSubMesh.uv2List is not None:
 							WriteToUVBuffer(UV2Buffer,parsedSubMesh.uv2List)
+						if exportUV3:
+							if parsedSubMesh.uv3List is None or len(parsedSubMesh.uv3List) == 0:
+								UV3Buffer.write(b"\0" * (vertCount * 4))
+							elif len(parsedSubMesh.uv3List) != vertCount:
+								raise ValueError("Third UV row count does not match the submesh vertex count")
+							else:
+								WriteToUVBuffer(UV3Buffer,parsedSubMesh.uv3List)
 						
 						if len(parsedSubMesh.weightIndicesList) != 0 and len(parsedSubMesh.weightIndicesList) == len(parsedSubMesh.weightList):
 							if parsedMesh.bufferHasExtraWeight and len(parsedSubMesh.extraWeightIndicesList) != 0 and len(parsedSubMesh.extraWeightIndicesList) == len(parsedSubMesh.extraWeightList):
@@ -2296,7 +2307,9 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 		reMesh.shadowHeader.materialCount = reMesh.lodHeader.materialCount
 		reMesh.shadowHeader.totalMeshCount = reMesh.lodHeader.totalMeshCount
 		
-		if parsedMesh.bufferHasUV2:
+		if exportUV3:
+			reMesh.shadowHeader.uvCount = 3
+		elif parsedMesh.bufferHasUV2:
 			reMesh.shadowHeader.uvCount = 2
 		else:
 			reMesh.shadowHeader.uvCount = 1
@@ -2546,6 +2559,15 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 		reMesh.meshBufferHeader.vertexElementList.append(vertexElement)
 		reMesh.meshBufferHeader.vertexBuffer.extend(colorBuffer.getvalue())
 
+	if UV3Buffer.tell() != 0:
+		vertexElement = VertexElementStruct()
+		vertexElement.posStartOffset = currentBufferOffset
+		vertexElement.typing = 6
+		vertexElement.stride = 4
+		currentBufferOffset += UV3Buffer.tell()
+		reMesh.meshBufferHeader.vertexElementList.append(vertexElement)
+		reMesh.meshBufferHeader.vertexBuffer.extend(UV3Buffer.getvalue())
+
 	if extraWeightBuffer.tell() != 0:
 		vertexElement = VertexElementStruct()
 		vertexElement.posStartOffset = currentBufferOffset
@@ -2622,6 +2644,7 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	norTanBuffer.close()
 	UVBuffer.close()
 	UV2Buffer.close()
+	UV3Buffer.close()
 	weightBuffer.close()
 	colorBuffer.close()
 	extraWeightBuffer.close()

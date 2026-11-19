@@ -796,6 +796,7 @@ def importLODGroup(parsedMesh,meshType,meshCollection,materialDict,armatureObj,h
 						vertexColor0List=subMesh.colorList,
 						UV0List=subMesh.uvList,
 						UV1List=subMesh.uv2List,
+						UV2List=subMesh.uv3List if gameName == "RE9" else [],
 						boneNameList=boneNameList,
 						vertexGroupWeightList=subMesh.weightList,
 						vertexGroupBoneIndicesList=subMesh.weightIndicesList,
@@ -1882,6 +1883,9 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				meshHasUV2 = len(evaluatedSubMeshData.uv_layers) > 1
 				if meshHasUV2:
 					parsedMesh.bufferHasUV2 = True
+				meshHasUV3 = gameName == "RE9" and len(evaluatedSubMeshData.uv_layers) > 2
+				if meshHasUV3:
+					parsedMesh.bufferHasUV3 = True
 
 				meshHasColor = len(evaluatedSubMeshData.vertex_colors) > 0
 				if meshHasColor:
@@ -1995,7 +1999,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				if splitLoopVertices:
 					exportVertexMap = {}
 					packedUVKeys = []
-					for layerIndex, hasLayer in enumerate((meshHasUV, meshHasUV2)):
+					for layerIndex, hasLayer in enumerate((meshHasUV, meshHasUV2, meshHasUV3)):
 						if hasLayer:
 							loopUVs = np.empty(len(evaluatedSubMeshData.loops) * 2, dtype=np.float32)
 							evaluatedSubMeshData.uv_layers[layerIndex].data.foreach_get("uv", loopUVs)
@@ -2008,6 +2012,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					outTangents = []
 					outUV0 = []
 					outUV1 = []
+					outUV2 = []
 					outColors = []
 
 					outWeights = []
@@ -2043,6 +2048,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 							uv0 = evaluatedSubMeshData.uv_layers[0].data[loopIndex].uv.copy() if meshHasUV else None
 							uv1 = evaluatedSubMeshData.uv_layers[1].data[loopIndex].uv.copy() if meshHasUV2 else None
+							uv2 = evaluatedSubMeshData.uv_layers[2].data[loopIndex].uv.copy() if meshHasUV3 else None
 							color = evaluatedSubMeshData.vertex_colors[0].data[loopIndex].color if meshHasColor else None
 
 							# Splitting if the loop normal, UV, tangent, or color attrib. is different.
@@ -2050,6 +2056,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 								srcVertIndex, _round_tuple(normal), tangentPacked,
 								int(packedUVKeys[0][loopIndex]) if meshHasUV else None,
 								int(packedUVKeys[1][loopIndex]) if meshHasUV2 else None,
+								int(packedUVKeys[2][loopIndex]) if meshHasUV3 else None,
 								_round_tuple(color) if color is not None else None,
 							)
 
@@ -2067,6 +2074,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 
 								if meshHasUV2:
 									outUV1.append(tuple(uv1))
+									if meshHasUV3:
+										outUV2.append(tuple(uv2))
 
 								if meshHasColor:
 									outColors.append(tuple(color))
@@ -2108,6 +2117,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						parsedSubMesh.uv2List = np.asarray(outUV1, dtype=np.float32)
 					else:
 						parsedSubMesh.uv2List = None
+					parsedSubMesh.uv3List = np.asarray(outUV2, dtype=np.float32) if meshHasUV3 else None
 
 					if meshHasColor:
 						parsedSubMesh.colorList = np.asarray(outColors, dtype=np.float32)
@@ -2188,6 +2198,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						parsedSubMesh.uv2List = np.zeros((legacyVertexCount, 2), dtype=np.float32)
 					else:
 						parsedSubMesh.uv2List = None
+					parsedSubMesh.uv3List = np.zeros((legacyVertexCount, 2), dtype=np.float32) if meshHasUV3 else None
 
 					if meshHasColor:
 						parsedSubMesh.colorList = np.zeros((legacyVertexCount, 4), dtype=np.float32)
@@ -2198,6 +2209,7 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					previousIndex = -1
 					UVPoints = dict()
 					UV2Points = dict()
+					UV3Points = dict()
 					usedOriginalVertexIndices = set()
 
 					for loop in sortedLoops:
@@ -2221,6 +2233,13 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
 							else:
 								UV2Points[currentVertIndex] = uv2
+						if meshHasUV3:
+							uv3 = evaluatedSubMeshData.uv_layers[2].data[loop.index].uv
+							parsedSubMesh.uv3List[currentVertIndex] = uv3
+							if currentVertIndex in UV3Points and UV3Points[currentVertIndex] != uv3:
+								addErrorToDict(errorDict, "MultipleUVsAssignedToVertex", rawsubmesh.name)
+							else:
+								UV3Points[currentVertIndex] = uv3
 
 						if currentVertIndex == previousIndex:
 							continue
@@ -2492,6 +2511,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		
 	if parsedMesh.bufferHasUV2:
 		vertexBufferString += "[UV2] "
+	if parsedMesh.bufferHasUV3:
+		vertexBufferString += "[UV3] "
 		
 	if parsedMesh.bufferHasWeight:
 		vertexBufferString += "[Weight] "
