@@ -1862,7 +1862,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 					evaluatedSubMeshData.calc_tangents()
 				except:
 					pass
-				vertexGroupIndexToRemapDict = {vgroup.index: remapDict[vgroup.name.removeprefix("SHAPEKEY_")] for vgroup in rawsubmesh.vertex_groups}
+				weightedVertexGroupIndices = {g.group for vertex in evaluatedSubMeshData.vertices for g in vertex.groups if g.weight > 0}
+				vertexGroupIndexToRemapDict = {vgroup.index: remapDict[vgroup.name.removeprefix("SHAPEKEY_")] for vgroup in rawsubmesh.vertex_groups if vgroup.index in weightedVertexGroupIndices}
 				
 				#DD2 shape key vertex group indices
 				shapeKeyGroupIndices = set([vgroup.index for vgroup in rawsubmesh.vertex_groups if vgroup.name.startswith("SHAPEKEY_")])
