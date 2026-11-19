@@ -39,8 +39,25 @@ class OBJECT_PT_MeshObjectModePanel(Panel):
 		layout.operator("re_mesh.remove_zero_weight_vertex_groups",icon = "MESH_DATA")
 		layout.operator("re_mesh.limit_total_normalize",icon = "MOD_VERTEX_WEIGHT")
 		layout.operator("re_mesh.batch_exporter",icon = "OUTLINER_OB_GROUP_INSTANCE")
+		layout.operator("re_mesh.quantize_weights_8bit",icon = "MOD_VERTEX_WEIGHT")
 		#layout.operator("re_mesh.quick_batch_export",icon = "OUTLINER_OB_GROUP_INSTANCE")#TODO FIX
 		
+class OBJECT_PT_MeshWeightPaintPanel(Panel):
+	bl_label = "RE Mesh Tools"
+	bl_idname = "OBJECT_PT_mesh_weight_paint_tools_panel"
+	bl_space_type = "VIEW_3D"
+	bl_region_type = "UI"
+	bl_category = "RE Mesh"
+	bl_context = "weightpaint"
+	bl_options = {'DEFAULT_CLOSED'}
+
+	@classmethod
+	def poll(cls, context):
+		return context is not None and "HIDE_RE_MDF_EDITOR_TAB" not in context.scene
+
+	def draw(self, context):
+		self.layout.operator("re_mesh.quantize_weights_8bit", icon="MOD_VERTEX_WEIGHT")
+
 class IMAGE_PT_REMeshUVPanel(Panel):
 	bl_label = "RE Mesh UV"
 	bl_idname = "IMAGE_PT_re_mesh_uv"

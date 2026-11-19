@@ -13,7 +13,7 @@ from bpy.props import (StringProperty,
                        EnumProperty,
                        )
 from .blender_re_mesh import solveRepeatedUVs
-from .file_re_mesh import PackUVsToHalf
+from .file_re_mesh import PackUVsToHalf,QuantizeWeightArrayToBytes
 from .re_mesh_parse import ReadUVBuffer
 from .re_mesh_propertyGroups import ExporterNodePropertyGroup,MESH_UL_REExporterList
 from ..gen_functions import splitNativesPath
@@ -596,6 +596,109 @@ class WM_OT_SolveRepeatedUVs(Operator):
 			self.report({"INFO"},"Solved repeated UVs on selected objects.")
 		return {'FINISHED'}
 	
+class WM_OT_QuantizeWeightsTo8Bit(Operator):
+	bl_label = "Quantize Weights to 8 bit"
+	bl_idname = "re_mesh.quantize_weights_8bit"
+	bl_description = "Works on selected objects. Optional Normalize All; locked groups are left unchanged."
+	bl_options = {'REGISTER', 'UNDO'}
+	normalizeWeights: BoolProperty(
+		name="Normalize All",
+		description="Run Blender's Normalize All before quantizing, preserving locked groups",
+		default=False,
+	)
+
+	@classmethod
+	def poll(cls, context):
+		return context.mode in {'OBJECT', 'PAINT_WEIGHT'} and any(
+			obj.type == 'MESH' and len(obj.vertex_groups) for obj in context.selected_objects
+		)
+
+	def draw(self, context):
+		self.layout.prop(self, "normalizeWeights")
+
+	def execute(self, context):
+		selected = {obj for obj in context.selected_objects if obj.type == 'MESH'}
+		pending = []
+		seen = set()
+		count = 0
+		changedCount = 0
+		for obj in context.selected_objects:
+			if obj.type != 'MESH' or not obj.vertex_groups or obj.data in seen:
+				continue
+			if not obj.is_editable or not obj.data.is_editable:
+				self.report({'WARNING'}, f"{obj.name} is not editable. No weights were changed.")
+				return {'CANCELLED'}
+			if obj.data.users > 1:
+				users = [user for user in bpy.data.objects if user.type == 'MESH' and user.data == obj.data]
+				if any(user not in selected for user in users):
+					self.report({'WARNING'}, f"{obj.name} shares mesh data with unselected objects. Make it single-user first. No weights were changed.")
+					return {'CANCELLED'}
+				profile = [(group.name, group.lock_weight) for group in obj.vertex_groups]
+				if any([(group.name, group.lock_weight) for group in user.vertex_groups] != profile for user in users):
+					self.report({'WARNING'}, f"{obj.name} shares mesh data with different vertex groups. Make it single-user first. No weights were changed.")
+					return {'CANCELLED'}
+			seen.add(obj.data)
+			weightsByGroup = {}
+			for vertex in obj.data.vertices:
+				for assignment in vertex.groups:
+					indices, values = weightsByGroup.setdefault(assignment.group, ([], []))
+					indices.append(vertex.index)
+					values.append(assignment.weight)
+			for groupIndex, (indices, values) in weightsByGroup.items():
+				if groupIndex >= len(obj.vertex_groups) or not np.isfinite(values).all():
+					self.report({'WARNING'}, f"{obj.name} has invalid weight data. No weights were changed.")
+					return {'CANCELLED'}
+			if weightsByGroup:
+				if self.normalizeWeights:
+					with context.temp_override(object=obj, active_object=obj, selected_objects=[obj], selected_editable_objects=[obj]):
+						if not bpy.ops.object.vertex_group_normalize_all.poll():
+							self.report({'WARNING'}, f"Cannot normalize {obj.name} in this context. No weights were changed.")
+							return {'CANCELLED'}
+				pending.append((obj, weightsByGroup))
+		if not pending:
+			self.report({'WARNING'}, "No assigned weights on selected mesh objects.")
+			return {'CANCELLED'}
+		try:
+			if self.normalizeWeights:
+				for obj, weightsByGroup in pending:
+					if all(obj.vertex_groups[index].lock_weight for index in weightsByGroup):
+						continue
+					with context.temp_override(object=obj, active_object=obj, selected_objects=[obj], selected_editable_objects=[obj]):
+						if bpy.ops.object.vertex_group_normalize_all(group_select_mode='ALL', lock_active=False) != {'FINISHED'}:
+							raise RuntimeError(f"Could not normalize {obj.name}")
+			for obj, weightsByGroup in pending:
+				for groupIndex, (indices, originalValues) in weightsByGroup.items():
+					group = obj.vertex_groups[groupIndex]
+					if group.lock_weight:
+						continue
+					values = [group.weight(index) for index in indices] if self.normalizeWeights else originalValues
+					packed = QuantizeWeightArrayToBytes(np.asarray(values).reshape((-1, 1)), normalizeWeights=False).reshape(-1)
+					quantized = (packed.astype(np.float64) / 255.0).astype(np.float32)
+					changed = np.asarray(originalValues) != quantized
+					needsWrite = np.asarray(values) != quantized
+					buckets = {}
+					for vertexIndex, byte, differs in zip(indices, packed, needsWrite):
+						if differs:
+							buckets.setdefault(int(byte), []).append(vertexIndex)
+					for byte, vertexIndices in buckets.items():
+						group.add(vertexIndices, float(np.float32(byte / 255.0)), 'REPLACE')
+					count += len(indices)
+					changedCount += int(np.count_nonzero(changed))
+				obj.data.update()
+		except Exception as err:
+			for obj, weightsByGroup in pending:
+				for groupIndex, (indices, originalValues) in weightsByGroup.items():
+					group = obj.vertex_groups[groupIndex]
+					for vertexIndex, value in zip(indices, originalValues):
+						group.add([vertexIndex], value, 'REPLACE')
+				obj.data.update()
+			self.report({'WARNING'}, f"Weight quantization cancelled; original weights restored: {err}")
+			return {'CANCELLED'}
+		if context.area is not None:
+			context.area.tag_redraw()
+		self.report({'INFO'}, f"Quantized {count} weights across {len(pending)} selected meshes. {changedCount} weight values changed.")
+		return {'FINISHED'}
+
 class WM_OT_QuantizeUVsTo16Bit(Operator):
 	bl_label = "Quantize UVs to 16 bit"
 	bl_idname = "re_mesh.quantize_uvs_16bit"
