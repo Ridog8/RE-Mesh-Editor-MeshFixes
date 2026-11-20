@@ -20,17 +20,33 @@ The checkbox for export 'Normalize Weights' has been added. The reason for this 
 4. Fixed DD2 Secondary Weight Issue<br>
 <img width="2838" height="1445" alt="DD2" src="https://github.com/user-attachments/assets/9004eced-9f12-4b41-b0db-fe7037be26e2" />
 
-5. Support for MHWs blendshapes
+5. Support for MHWs and RE9 blendshapes
 
 6. Support for Onimusha: WoTS meshes
 
-7. Added new user configuration and export settings
+7. Added new user configuration, operators, and export settings
 
 8. Sped up some functions such as bone index packing
 
 9. Extended weights packed closer to vanilla structure (only Wilds + Oni:WoTS at the time of writing this)
 
 10. Added DD2 TU 3.2 support and fixed wrong weight total calculation for DD2 meshes.
+
+11. UVs are now more accurate:
+Measured example:
+Before export:
+0.000099999997, 0.001000000047, 0.009999999776, 0.100000001490, 0.333299994469, 0.999700009823, 0.999899983406
+
+After export/reimport (v0.66, original):
+0.000000000000, 0.000976562500, 0.009765625000, 0.100097656250, 0.333007812500, 0.999511718750, 1.000000000000
+
+After export/reimport (this fork as of v0.71):
+0.000000000000, 0.000976562500, 0.009765625000, 0.100097656250, 0.333496093750, 0.999700069427, 0.999899983406
+
+Total absolute error for 'previously': 0.001035956716
+Total absolute error for 'updated': 0.000651625965
+
+12. All LOD export bug fix
 
 ##
 For additional help, go here:
