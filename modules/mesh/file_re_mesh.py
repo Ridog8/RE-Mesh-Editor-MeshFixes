@@ -1653,6 +1653,10 @@ class REMesh():
 			file.seek(self.fileHeader.blendShapesOffset)
 			self.blendShapeHeader = BlendShapeHeader()
 			self.blendShapeHeader.read(file,version)
+		elif self.fileHeader.version == 250904410 and self.fileHeader.blendShapesOffset and IMPORT_BLEND_SHAPES:
+			from .re_blendshape import read_re9_header
+			file.seek(self.fileHeader.blendShapesOffset)
+			self.blendShapeHeader = read_re9_header(file)
 		
 		if self.fileHeader.aabbOffset:
 			file.seek(self.fileHeader.aabbOffset)
@@ -1765,6 +1769,11 @@ class REMesh():
 					f"0x{file.tell():X}/0x{mhwildsMarkerOffset:X}"
 				)
 			file.write(b"\x00" * 16)
+
+		if version == VERSION_RE9 and getattr(self, "_re9NormalMarkerOffset", 0):
+			if file.tell() != self._re9NormalMarkerOffset:
+				raise ValueError("RE9 normal marker reservation does not match serialization")
+			file.write(struct.pack("<4I", self._re9BlendShapeMode, 0, 0, 0))
 
 		if self.fileHeader.blendShapesOffset:
 			if self.fileHeader.blendShapesOffset != file.tell():
@@ -2436,12 +2445,12 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	# focused helper owns only the Wilds-specific table and payload layout.
 	blendShapePlan = None
 	if version == VERSION_MHWILDS:
-		from .mhwilds_blendshape import build_blend_shape_plan
+		from .re_blendshape import build_blend_shape_plan
 		blendShapePlan = build_blend_shape_plan(
 			parsedMesh, parsedSubMeshToSubMeshDataDict
 		)
 		if blendShapePlan is not None:
-			from .mhwilds_blendshape import (
+			from .re_blendshape import (
 				relocate_blend_shape_header,
 				reserve_normal_recalc_marker,
 			)
@@ -2454,6 +2463,11 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 				reMesh.blendShapeHeader, currentOffset, version
 			)
 			reMesh._blendShapeExportPlan = blendShapePlan
+	elif version == VERSION_RE9:
+		from .re_blendshape import build_blend_shape_plan, reserve_re9_metadata
+		blendShapePlan = build_blend_shape_plan(parsedMesh, parsedSubMeshToSubMeshDataDict, game="RE9")
+		if blendShapePlan is not None:
+			currentOffset = reserve_re9_metadata(reMesh, blendShapePlan, currentOffset)
 	#Name lists and remaps
 	currentNameIndex = 0
 	for index,materialName in enumerate(parsedMesh.materialNameList):
@@ -2651,8 +2665,11 @@ def ParsedREMeshToREMesh(parsedMesh,meshVersion,normalizeWeights=True):
 	faceBuffer.close()
 	secondaryWeightBuffer.close()
 	if version == VERSION_MHWILDS and blendShapePlan is not None:
-		from .mhwilds_blendshape import finalize_mhwilds_export
-		finalize_mhwilds_export(parsedMesh, reMesh)
+		from .re_blendshape import finalize_export
+		finalize_export(parsedMesh, reMesh)
+	elif version == VERSION_RE9 and blendShapePlan is not None:
+		from .re_blendshape import finalize_export
+		finalize_export(parsedMesh, reMesh, game="RE9")
 	return reMesh
 #---RE MESH IO FUNCTIONS---#
 
@@ -2707,8 +2724,6 @@ def readREMesh(filepath,lodTarget = None):
 	file.close()
 	return reMeshFile
 def writeREMesh(reMeshFile,filepath):
-	# Dispatch custom blendshape writers by generic handler key. Monster Hunter
-	# Wilds is currently the only registered implementation.
 	blendShapeWriter = getattr(reMeshFile, "_blendShapeWriter", None)
 	if blendShapeWriter is not None:
 		try:
@@ -2716,8 +2731,11 @@ def writeREMesh(reMeshFile,filepath):
 		except:
 			meshVersion = 0
 		if blendShapeWriter == "MHWILDS" and meshVersion == 241111606:
-			from .mhwilds_blendshape import write_mhwilds_mesh
-			return write_mhwilds_mesh(reMeshFile, filepath)
+			from .re_blendshape import write_mesh
+			return write_mesh(reMeshFile, filepath)
+		if blendShapeWriter == "RE9" and meshVersion == 250925211:
+			from .re_blendshape import write_mesh
+			return write_mesh(reMeshFile, filepath, game="RE9")
 		raise RuntimeError(
 			f"No blendshape writer registered for {blendShapeWriter} "
 			f"and mesh version {meshVersion}"

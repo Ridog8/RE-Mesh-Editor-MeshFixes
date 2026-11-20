@@ -17,7 +17,7 @@ BLEND_SHAPE_MESH_VERSIONS = frozenset((
 
 
 def _mesh_supports_blend_shapes(reMesh):
-	return int(getattr(reMesh, "meshVersion", 0) or 0) in BLEND_SHAPE_MESH_VERSIONS
+	return int(getattr(reMesh, "meshVersion", 0) or 0) in BLEND_SHAPE_MESH_VERSIONS or int(getattr(reMesh.fileHeader, "version", 0) or 0) == 250904410
 
 
 SIX_WEIGHT_MESH_VERSIONS = frozenset([
@@ -687,7 +687,6 @@ def _parseLODStructureWithBlendShapes(
 	return lodList
 
 
-# Current blendshape import dispatch is exclusive to Monster Hunter Wilds.
 def parseLODStructure(
 	reMesh,
 	targetLODList,
@@ -707,6 +706,10 @@ def parseLODStructure(
 			faceBufferList,
 			usedVertexOffsetDictList,
 		)
+	if reMesh.fileHeader.version == 250904410:
+		from .re_blendshape import apply_re9_imported_shapes
+		lods = _parseLODStructureWithoutBlendShapes(reMesh, targetLODList, vertexDictList, faceBufferList, usedVertexOffsetDictList)
+		return apply_re9_imported_shapes(reMesh, targetLODList, lods, blendShapeBufferList)
 	return _parseLODStructureWithBlendShapes(
 		reMesh,
 		targetLODList,

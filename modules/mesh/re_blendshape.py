@@ -1,7 +1,6 @@
-"""Monster Hunter Wilds blend-shape support for the unified RE Mesh exporter."""
-
 import copy
 import heapq
+import io
 import math
 import warnings
 import os
@@ -9,6 +8,7 @@ import struct
 import zlib
 from collections import Counter
 from io import BytesIO
+from types import MethodType
 
 import numpy as np
 
@@ -27,7 +27,15 @@ MHWILDS_BLENDSHAPE_MODES = (0, 1)
 MHWILDS_BLENDSHAPE_MODE_ATTRIBUTE = "_mhwildsBlendShapeMode"
 
 
-def set_export_mode(parsed_mesh, mode):
+def set_export_mode(parsed_mesh, mode, game="MHWILDS"):
+	if game == "RE9":
+		mode = int(mode)
+		if mode not in (0, 1):
+			raise ValueError(f"RE9 blendshape mode must be 0 or 1, got {mode}")
+		parsed_mesh._re9BlendShapeMode = mode
+		return mode
+	if game != "MHWILDS":
+		raise ValueError(f"Unsupported blendshape game: {game}")
 	mode = int(mode)
 	if mode not in MHWILDS_BLENDSHAPE_MODES:
 		raise ValueError(f"MHWILDS blendshape mode must be 0 or 1, got {mode}")
@@ -36,7 +44,7 @@ def set_export_mode(parsed_mesh, mode):
 
 
 def _export_mode(parsed_mesh=None, re_mesh=None):
-	"""Resolve the per-export mode, defaulting to Wilds mode 0."""
+	"""Use the saved export mode, or mode 0 if none was set."""
 	for owner in (re_mesh, parsed_mesh):
 		if owner is None:
 			continue
@@ -55,7 +63,7 @@ def _align16(value):
 
 
 def reserve_normal_recalc_marker(re_mesh, current_offset):
-	"""Reserve vanilla's 16-byte normal marker directly before blendShapesOffset."""
+	"""Leave 16 bytes for the normal marker before blendShapesOffset."""
 	marker_offset = _align16(current_offset)
 	re_mesh.fileHeader.normalRecalcOffset = marker_offset
 	re_mesh._mhwildsNormalMarkerOffset = marker_offset
@@ -63,7 +71,7 @@ def reserve_normal_recalc_marker(re_mesh, current_offset):
 
 
 def _list_or_empty(value):
-	"""Convert sequences, including NumPy arrays, without testing truthiness."""
+	"""Avoid NumPy's ambiguous truth-value check."""
 	return [] if value is None else list(value)
 
 
@@ -140,7 +148,7 @@ def _symmetric_aabb(delta_arrays):
 
 
 def _pack_delta_rows(deltas, aabb):
-	"""Pack center-biased Wilds 11/10/11 rows; zero is 0x7FEFFBFF."""
+	"""Pack Wilds 11/10/11 deltas. Packed zero is 0x7FEFFBFF."""
 	deltas = np.asarray(deltas, dtype=np.float32)
 	if deltas.size == 0:
 		return b""
@@ -175,7 +183,7 @@ def _pack_delta_rows(deltas, aabb):
 
 
 def _exported_groups(lod, parsed_to_mesh_info):
-	"""Split each viscon group by the shape channels actually authored per submesh."""
+	"""Group submeshes that use the same shape keys."""
 	groups = []
 	for order, viscon in enumerate(
 		_list_or_empty(getattr(lod, "visconGroupList", None))
@@ -184,9 +192,7 @@ def _exported_groups(lod, parsed_to_mesh_info):
 		for parsed_submesh in _list_or_empty(
 			getattr(viscon, "subMeshList", None)
 		):
-			# Reused LOD geometry still needs its own Wilds blend body.
-			# The MaterialSubdivision keeps the authoritative global start index,
-			# while the visual vertex bytes remain de-duplicated in VBI0.
+			# Shared LODs still need a blend body, but can reuse the vertex buffer.
 			mesh_info = parsed_to_mesh_info.get(parsed_submesh)
 			vertex_positions = getattr(
 				parsed_submesh, "vertexPosList", None
@@ -202,9 +208,7 @@ def _exported_groups(lod, parsed_to_mesh_info):
 		if not submeshes:
 			continue
 
-		# A Wilds active target must cover only submeshes that actually author
-		# those channels. The former whole-viscon union caused unedited submeshes
-		# to be serialized as active zero-delta participants.
+		# Only include submeshes that have these shape keys.
 		partitions = []
 		partition_by_signature = {}
 		for submesh in submeshes:
@@ -233,7 +237,7 @@ def _exported_groups(lod, parsed_to_mesh_info):
 
 
 def _target_coverage_signature(target):
-	"""Compare Wilds targets by their VBI0 vertex ranges, not channel names."""
+	"""Match targets by vertex ranges, not shape-key names."""
 	return tuple(sorted(
 		(int(entry.subMeshVertexStartIndex), int(entry.vertCount))
 		for entry in target.subMeshEntryList
@@ -241,8 +245,11 @@ def _target_coverage_signature(target):
 	))
 
 
-def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
-	"""Build active and inactive Wilds targets from Blender viscon groups."""
+def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info, game="MHWILDS"):
+	if game == "RE9":
+		return _build_re9_plan(parsed_mesh, parsed_to_mesh_info)
+	if game != "MHWILDS":
+		raise ValueError(f"Unsupported blendshape game: {game}")
 	lods = _list_or_empty(
 		getattr(parsed_mesh, "mainMeshLODList", None)
 	)
@@ -324,8 +331,7 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 			target.subMeshEntryList = []
 			for _parsed, mesh_info, vertex_count in group["submeshes"]:
 				entry = mesh_format.BlendSubMesh()
-				# VBI0 is one global vertex namespace. Blend targets must use
-				# the same global starts as the MaterialSubdivision records.
+				# Match the global vertex starts used by MaterialSubdivision.
 				entry.subMeshVertexStartIndex = int(mesh_info.vertexStartIndex)
 				entry.vertOffset = 0
 				entry.vertCount = int(vertex_count)
@@ -448,7 +454,7 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 		for target, source in aliases.items()
 		if int(target) < header.count
 	}
-	# Current-Blender source provenance for canonical-table generation.
+	# Track Blender vertices when building the normal tables.
 	max_vertex_end = 0
 	for lod in lods:
 		for viscon in _list_or_empty(getattr(lod, "visconGroupList", None)):
@@ -497,7 +503,7 @@ def build_blend_shape_plan(parsed_mesh, parsed_to_mesh_info):
 
 
 def relocate_blend_shape_header(header, base_offset, version):
-	"""Lay out each physical body and its child tables at absolute offsets."""
+	"""Assign file offsets to the blendshape header and its tables."""
 	header.count = len(header.blendShapeList)
 	header.mainOffset = base_offset + 32 if header.count else 0
 	current = _align16(base_offset + 32 + 8 * header.count)
@@ -549,7 +555,7 @@ def _face_intervals(lod_range):
 
 
 def _reorder_overflowing_canonical_faces(face_buffer, intervals, canonical, index_stride):
-	"""Keep each Wilds 1536-index face window within its 1024 canonical lanes."""
+	"""Fit each 1536-index face window into 1024 vertex lanes."""
 	index_format = "<3I" if index_stride == 4 else "<3H"
 	changed_intervals = 0
 	for start, end, vertex_start in intervals:
@@ -698,11 +704,8 @@ def _canonical_tables(
 			int(position.posStartOffset)
 			+ vertex_index * int(position.stride)
 		)
-		# If the current Blender exporter split one Blender vertex into
-		# multiple game rows, that Blender vertex identity is the strongest
-		# available logical/canonical provenance. For legacy 1:1 exports,
-		# retain the validated geometric fallback instead of pretending a
-		# unique source index proves that coincident imported rows are unrelated.
+		# Use Blender vertex IDs for rows split at UV/normal seams.
+		# For 1:1 exports, match coincident rows by position and normal.
 		use_source_identity = (
 			source_vertex_indices is not None
 			and source_identity_reliable is not None
@@ -834,7 +837,7 @@ def _resolve_alias_map(raw_map, lod_count):
 
 
 def _stable_bucket(preferred_bytes, palette):
-	"""Pick a deterministic starting group from a palette without Python hash()."""
+	"""Choose a repeatable starting group; Python's hash() changes between runs."""
 	if not palette:
 		return 0
 	crc = zlib.crc32(preferred_bytes) & 0xFFFFFFFF
@@ -842,7 +845,7 @@ def _stable_bucket(preferred_bytes, palette):
 
 
 def _color_blender_submesh(vertex_positions, face_list, source_indices, palette):
-	"""Build deterministic adjacency-safe recalc buckets from current Blender topology."""
+	"""Give adjacent vertices different normal-recalculation groups."""
 	count = len(vertex_positions)
 	if count == 0 or not palette:
 		return np.zeros(count, dtype=np.int16)
@@ -894,18 +897,15 @@ def _color_blender_submesh(vertex_positions, face_list, source_indices, palette)
 
 
 def _normal_contract(parsed_mesh):
-	"""Generate Normal.w and all 256 pivot rows from CURRENT Blender topology.
+	"""Build normal groups and 256 pivots from Blender geometry.
 
-	Imported MHWILDS_NormalGroup / pivot-marker attributes are deliberately not
-	used to build this contract. If present, they are consulted only for a
-	diagnostic agreement report.
+	Imported group/pivot attributes are only used for comparison.
 	"""
 	lods = _list_or_empty(getattr(parsed_mesh, "mainMeshLODList", None))
 	if not lods:
 		return None
 
-	# First gather the physical Blender-authored submeshes in the same order used
-	# by the parsed exporter. Reused logical LODs do not add another VBI0 range.
+	# Use the exporter's submesh order. Shared LODs don't add vertices.
 	lod_records = []
 	global_vertex_count = 0
 	for lod_index, lod in enumerate(lods):
@@ -947,9 +947,8 @@ def _normal_contract(parsed_mesh):
 	if lod0_vertex_count <= 0:
 		raise RuntimeError("Blender-authored Wilds normal contract has empty LOD0")
 
-	# Wilds exposes 254 nonzero logical group IDs. Use the complete palette when
-	# LOD0 has enough blend-bearing vertices so the generated contract remains
-	# deterministic and has valid pivots for every group higher LODs may use.
+	# Groups 0 and 255 are reserved.
+	# Use up to 254 groups, limited by LOD0's blendshape vertex count.
 	lod0_active_count = sum(
 		record["count"] for record in lod_records[0] if record["shapeNames"]
 	)
@@ -982,9 +981,7 @@ def _normal_contract(parsed_mesh):
 			current_count += count
 		return logical_arrays, current_count
 
-	# Color LOD0 first. Its actually used group IDs define the only palette
-	# higher LODs are allowed to reference, guaranteeing every higher-LOD group
-	# has a real Blender-authored LOD0 pivot row.
+	# Higher LODs may only use groups with a LOD0 pivot.
 	lod0_arrays, lod0_count = color_lod(lod_records[0], lod0_palette, 0)
 	for record, logical in zip(lod_records[0], lod0_arrays):
 		all_logical_groups.append(logical)
@@ -1022,13 +1019,11 @@ def _normal_contract(parsed_mesh):
 	if np.any(groups < 0) or np.any(groups > 254):
 		raise RuntimeError("Generated Wilds normal groups exceeded 0..254")
 
-	# Every used logical group gets a pivot selected from CURRENT LOD0 geometry.
-	# The group IDs are just deterministic buckets; no imported pivot identity is
-	# required. Unused slots collapse to slot 0, as in the previous writer.
+	# Pick pivots from LOD0. Unused slots reuse pivot 0.
 	pivot_indices = [0] * 256
 	if len(positions) == 0:
 		raise RuntimeError("Generated Wilds pivot table has no LOD0 positions")
-	# Deterministic special slots from Blender geometry, independent of source file.
+	# Set the two special pivots from Blender geometry.
 	lex_order = np.lexsort((positions[:, 2], positions[:, 1], positions[:, 0]))
 	slot0_index = int(lex_order[0])
 	slot255_index = int(lex_order[-1])
@@ -1054,9 +1049,7 @@ def _normal_contract(parsed_mesh):
 			encoded = logical + 1
 		group_lane[row] = encoded
 
-	# Diagnostic only: imported attributes can tell us how different our generated
-	# topology is on a vanilla reference, but deleting every attribute must not
-	# change one byte of generated output.
+	# Compare imported attributes for logging only; they don't affect export.
 	valid_mask = np.asarray(lod0_reference_valid, dtype=bool)
 	if len(valid_mask) == len(lod0_groups) and np.any(valid_mask):
 		reference = np.asarray(lod0_reference_groups, dtype=np.int16)
@@ -1081,7 +1074,7 @@ def _signed_short(value):
 
 
 def _global_resource_range(re_mesh):
-	"""Build one de-duplicated global range for the Blender-authored VBI0."""
+	"""Collect the shared VBI0 vertex and face ranges."""
 	unique_entries = []
 	seen = set()
 	for lod in re_mesh.lodHeader.lodGroupList:
@@ -1135,7 +1128,7 @@ def _global_resource_range(re_mesh):
 
 
 def _assign_unified_payload_offsets(bodies, payloads, aliases):
-	"""Assign global row offsets while omitting aliased duplicate payloads."""
+	"""Set delta offsets without storing shared LOD payloads twice."""
 	owners = []
 	for body_index in range(len(bodies)):
 		owner = int(aliases.get(body_index, body_index))
@@ -1184,8 +1177,8 @@ def _assign_unified_payload_offsets(bodies, payloads, aliases):
 	return bytes(payload_blob)
 
 
-def finalize_mhwilds_export(parsed_mesh, re_mesh):
-	"""Keep Blender geometry and blend-target addressing in global VBI0."""
+def _finalize_wilds_export(parsed_mesh, re_mesh):
+	"""Use the exported vertex and face ranges for Wilds blendshapes."""
 	mode = _export_mode(parsed_mesh=parsed_mesh)
 	setattr(re_mesh, MHWILDS_BLENDSHAPE_MODE_ATTRIBUTE, mode)
 	plan = re_mesh._blendShapeExportPlan
@@ -1197,9 +1190,7 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	if len(bodies) > len(lods):
 		raise RuntimeError("Wilds has more blend bodies than authored LODs")
 
-	# The original exporter has already built the Blender-authoritative global
-	# vertex/face namespaces. Keep those exact ranges and keep every visible
-	# subdivision on the inline VBI0.
+	# Keep the exporter's existing vertex/face ranges in VBI0.
 	for lod in lods:
 		for group in lod.meshGroupList:
 			for entry in group.vertexInfoList:
@@ -1214,9 +1205,7 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	for lod_index, lod in enumerate(lods):
 		lod.reserved = int(aliases.get(lod_index, 0))
 
-	# Preserve the vanilla shared-LOD pointer contract where Blender collections
-	# are genuinely shared. Physical records are still written for deterministic
-	# round-tripping, but consumers see the same logical aliases as vanilla.
+	# Point shared LODs at their owner. Keep the physical records for re-import.
 	for target, source in aliases.items():
 		re_mesh.lodHeader.lodGroupOffsetList[target] = (
 			re_mesh.lodHeader.lodGroupOffsetList[source]
@@ -1234,8 +1223,7 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 		physical_blend_offsets
 	)
 
-	# Every target uses the same global VBI0 vertex namespace as its visible
-	# MaterialSubdivision. vertOffset selects the body's packed delta rows.
+	# Target vertex ranges use VBI0 indices; vertOffset addresses delta rows.
 	payload_blob = _assign_unified_payload_offsets(
 		bodies, payloads, aliases
 	)
@@ -1267,10 +1255,8 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	else:
 		face_table, vertex_table = b"", b""
 
-	# Wilds starts the canonical face table at the next 16-byte boundary
-	# after the ordinary vertex elements. Head meshes happen to end aligned
-	# already, while meshes with a 44-byte combined vertex stride (including
-	# this chainmail mesh) require explicit padding here.
+	# The canonical face table starts on a 16-byte boundary.
+	# Add padding when the vertex buffer doesn't end there.
 	visual_end = len(visual)
 	canonical_start = _align16(visual_end)
 	visual_padding = canonical_start - visual_end
@@ -1298,9 +1284,8 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 		mesh_header.block2FaceBufferOffset
 	)
 
-	# Wilds stores the first canonical boundary in the two adjacent signed
-	# 16-bit fields at MeshBufferHeader + 44. Together they form one 32-bit
-	# value. The following qword stores boundaries two and three.
+	# The two int16 fields at MeshBufferHeader + 44 store boundary 0.
+	# The next uint64 stores boundaries 1 and 2.
 	canonical_boundary0 = int(canonical_start)
 	mesh_header.vertexElementSize = _signed_short(
 		canonical_boundary0 & 0xFFFF
@@ -1310,7 +1295,7 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	)
 	re_mesh._mhwildsCanonicalBoundary0 = canonical_boundary0
 
-	# The two real 32-bit Wilds boundaries remain in sunbreakSecondUnknown.
+	# Keep boundaries 1 and 2 packed in sunbreakSecondUnknown.
 	mesh_header.sunbreakSecondUnknown = (
 		(int(payload_start) << 32) | int(face_table_end)
 	)
@@ -1322,9 +1307,7 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	re_mesh.streamingInfoHeader = None
 	re_mesh.streamingBuffer = None
 
-	# normal groups and all 256 pivot identities are generated from
-	# current Blender topology. Imported Wilds point attributes are optional
-	# diagnostics only and are not required for serialization.
+	# Build normal groups and pivots from Blender, not imported attributes.
 	normal_plan = _normal_contract(parsed_mesh)
 	mesh_offset = int(re_mesh.fileHeader.meshOffset)
 	if normal_plan is not None:
@@ -1358,15 +1341,14 @@ def finalize_mhwilds_export(parsed_mesh, re_mesh):
 	)
 
 	re_mesh.fileHeader.verticesOffset = mesh_header.vertexBufferOffset
-	# A zero-entry StreamingInfo view is represented by the zero fields already
-	# present at meshOffset+64, matching the original unified exporter.
+	# Reuse the zero fields at meshOffset + 64 for empty StreamingInfo.
 	re_mesh.fileHeader.streamingInfoOffset = mesh_offset + 64
 	re_mesh.fileHeader.normalRecalcOffset = marker_offset
 	re_mesh.fileHeader.floatsOffset = int(
 		getattr(re_mesh, "_mhwildsFloatDescriptorOffset", 0)
 	)
 	re_mesh.fileHeader.fileSize = inline_end
-	# Both the FloatData pivot package and vanilla-positioned marker are active.
+	# Enable the normal marker and pivot data.
 	re_mesh.fileHeader.contentFlag.bitFlag |= 0x800C
 	re_mesh.fileHeader.contentFlag.parseBitFlag()
 
@@ -1453,7 +1435,7 @@ def _write_generated_mesh_buffer(self, file, version):
 
 
 def _apply_normal_contract(data, re_mesh):
-	"""Write the Blender-generated R38 normal/pivot contract in mode 0 or 1."""
+	"""Write the normal groups, pivots, and mode 0/1 marker."""
 	mode = _export_mode(re_mesh=re_mesh)
 	plan = getattr(re_mesh, "_mhwildsNormalContract", None)
 	if plan is None:
@@ -1490,7 +1472,7 @@ def _apply_normal_contract(data, re_mesh):
 			"blendshape adjacency changed before serialization"
 		)
 
-	# The reserved slot must be unused metadata padding before we populate it.
+	# Check that nothing else has written into the reserved marker slot.
 	if any(data[marker_offset:marker_offset + 16]):
 		raise RuntimeError("slot was overwritten by another structure")
 	struct.pack_into("<IIII", data, marker_offset, mode, 0, 0, 0)
@@ -1513,8 +1495,8 @@ def _apply_normal_contract(data, re_mesh):
 	return bytes(data)
 
 
-def write_mhwilds_mesh(re_mesh, filepath):
-	"""Serialize the generated stream regions inside the main mesh file."""
+def _write_wilds_mesh(re_mesh, filepath):
+	"""Write all mesh data into a single file."""
 	print("Writing unified MHWs mesh to " + filepath)
 	try:
 		mesh_version = int(os.path.splitext(filepath)[1].replace(".", ""))
@@ -1546,7 +1528,7 @@ def write_mhwilds_mesh(re_mesh, filepath):
 	with open(filepath, "wb") as output:
 		output.write(data)
 
-	# Verify all three serialized canonical boundaries.
+	# Check the three canonical-table boundaries.
 	with open(filepath, "rb") as verification_file:
 		verification_data = verification_file.read()
 	mesh_header_offset = int(re_mesh.fileHeader.meshOffset)
@@ -1588,7 +1570,7 @@ def write_mhwilds_mesh(re_mesh, filepath):
 		)
 	del re_mesh._mhwildsCanonicalBoundary0
 
-	# Verify vanilla marker placement plus the already validated pivot package.
+	# Check the normal marker and pivot data.
 	written_content_flag = struct.unpack_from("<H", verification_data, 0x16)[0]
 	written_normal_offset = struct.unpack_from("<Q", verification_data, 0x48)[0]
 	written_blend_offset = struct.unpack_from("<Q", verification_data, 0x50)[0]
@@ -1672,7 +1654,7 @@ def write_mhwilds_mesh(re_mesh, filepath):
 	if actual_pivots != bytes(expected_pivots):
 		raise RuntimeError("serialized pivot table verification failed")
 
-	# Verify logical aliases do not consume another shape-remap range.
+	# Shared LODs must reuse their owner's shape-remap range.
 	plan = getattr(re_mesh, "_blendShapeExportPlan", {})
 	expected_remap_bases = list(plan.get("bodyRemapBases", ()))
 	expected_aliases = dict(plan.get("aliases", {}))
@@ -1724,3 +1706,437 @@ def write_mhwilds_mesh(re_mesh, filepath):
 				f"{body_index}: {serialized_target_base}/{expected_base}"
 			)
 	return None
+
+
+RE9_INTERNAL_VERSION = 250904410
+RE9_SOURCE_VERTEX_ATTRIBUTE = "_RE9_ExportSourceVertex"
+
+
+def read_re9_header(file):
+    position = file.tell()
+    file.seek(0, 2)
+    length = file.tell()
+
+    def unpack(offset, fmt, count=1):
+        size = struct.calcsize(fmt)
+        if offset < 0 or count < 0 or offset + size * count > length:
+            raise ValueError("RE9 blendshape metadata exceeds the mesh file")
+        file.seek(offset)
+        return [struct.unpack(fmt, file.read(size)) for _ in range(count)]
+
+    header = mesh_format.BlendShapeHeader()
+    header.count, header.zero, header.mainOffset, header.hash = unpack(position, "<4Q")[0]
+    if header.count > 256:
+        raise ValueError("Invalid RE9 blendshape LOD count")
+    header.blendShapeOffsetList = [row[0] for row in unpack(header.mainOffset, "<Q", header.count)]
+    for offset in header.blendShapeOffsetList:
+        body = mesh_format.BlendShapeData()
+        (body.targetCount, body.typing, body.unknFlag, body.padding1, body.padding2,
+         body.dataOffset, body.aabbOffset, body.blendSOffset, body.blendSSOffset) = unpack(offset, "<HHIII4Q")[0]
+        body.blendTargetList = []
+        for record in unpack(body.dataOffset, "<HHHBBQ", body.targetCount + body.typing):
+            target = mesh_format.BlendTarget(mesh_format.VERSION_RE9)
+            (target.blendSSIndex, target.blendShapeNum, target.unkn0, target.subMeshEntryCount,
+             target.unkn2, target.subMeshEntryOffset) = record
+            for values in unpack(target.subMeshEntryOffset, "<4I", target.subMeshEntryCount):
+                entry = mesh_format.BlendSubMesh()
+                entry.subMeshVertexStartIndex, entry.vertOffset, entry.vertCount, entry.paramUnkn3 = values
+                target.subMeshEntryList.append(entry)
+            body.blendTargetList.append(target)
+        body.aabbList = []
+        for values in unpack(body.aabbOffset, "<8f", body.targetCount):
+            if not np.all(np.isfinite(values)):
+                raise ValueError("Non-finite RE9 blendshape bounds")
+            box = mesh_format.AABB()
+            box.min.x, box.min.y, box.min.z, box.min.w = values[:4]
+            box.max.x, box.max.y, box.max.z, box.max.w = values[4:]
+            body.aabbList.append(box)
+        body.blendS = list(unpack(body.blendSOffset, "<3i")[0])
+        body.blendSSList = [row[0] for row in unpack(body.blendSSOffset, "<i", body.unknFlag >> 16)]
+        header.blendShapeList.append(body)
+    file.seek(position)
+    return header
+
+
+def _decode_re9_rows(data, box):
+    if len(data) % 4:
+        raise ValueError("Incomplete RE9 blendshape delta row")
+    packed = np.frombuffer(data, dtype="<u4")
+    result = np.empty((len(packed), 3), dtype=np.float32)
+    result[:, 0] = ((packed & 2047).astype(np.float32) - 1023.0) / 1023.0
+    result[:, 1] = (((packed >> 11) & 1023).astype(np.float32) - 511.0) / 511.0
+    result[:, 2] = (((packed >> 21) & 2047).astype(np.float32) - 1023.0) / 1023.0
+    scale = np.array([max(abs(getattr(box.min, axis)), abs(getattr(box.max, axis))) for axis in ("x", "y", "z")], dtype=np.float32)
+    result = np.clip(result, -1.0, 1.0) * scale
+    result[packed == 0x7FEFFBFF] = 0.0
+    return result
+
+
+def apply_re9_imported_shapes(raw, target_lods, lods, payloads):
+    from .re_mesh_parse import BlendShape
+
+    header = raw.blendShapeHeader
+    if header is None:
+        return lods
+    source_lods = raw.lodHeader.lodGroupList
+    for raw_lod, lod in zip(target_lods, lods):
+        lod_index = next((i for i, entry in enumerate(source_lods) if entry is raw_lod), None)
+        if lod_index is None or lod_index >= len(header.blendShapeList):
+            continue
+        body = header.blendShapeList[lod_index]
+        records = []
+        for raw_group, group in zip(raw_lod.meshGroupList, lod.visconGroupList):
+            for info, submesh in zip(raw_group.vertexInfoList, group.subMeshList):
+                records.append((info, submesh))
+        for target in body.blendTargetList[:body.targetCount]:
+            if not target.blendShapeNum:
+                continue
+            if target.unkn0 >= len(body.aabbList):
+                raise ValueError("RE9 blendshape target references missing bounds")
+            box = body.aabbList[target.unkn0]
+            row_count = sum(entry.vertCount for entry in target.subMeshEntryList)
+            for entry in target.subMeshEntryList:
+                matches = []
+                for info, submesh in records:
+                    start = int(info.vertexStartIndex)
+                    end = start + len(submesh.vertexPosList)
+                    lo = max(start, entry.subMeshVertexStartIndex)
+                    hi = min(end, entry.subMeshVertexStartIndex + entry.vertCount)
+                    if hi > lo:
+                        matches.append((info, submesh, lo, hi))
+                banks = {int(info.vertexBufferIndex) for info, _submesh, _lo, _hi in matches}
+                if not matches or len(banks) != 1:
+                    raise ValueError("RE9 blendshape range does not identify one vertex bank")
+                payload = payloads[next(iter(banks))]
+                for channel in range(target.blendShapeNum):
+                    remap = target.blendSSIndex + channel
+                    if remap >= len(raw.blendShapeNameRemapList):
+                        raise ValueError("RE9 blendshape name remap is out of range")
+                    name = raw.rawNameList[raw.blendShapeNameRemapList[remap]]
+                    row = int(entry.vertOffset) + channel * row_count
+                    encoded = payload[row * 4:(row + entry.vertCount) * 4]
+                    if len(encoded) != entry.vertCount * 4:
+                        raise ValueError(f"Incomplete RE9 blendshape data for {name}")
+                    deltas = _decode_re9_rows(encoded, box)
+                    for info, submesh, lo, hi in matches:
+                        shape = next((shape for shape in submesh.blendShapeList if shape.blendShapeName == name), None)
+                        if shape is None:
+                            shape = BlendShape()
+                            shape.blendShapeName = name
+                            shape.deltas = np.zeros((len(submesh.vertexPosList), 3), dtype=np.float32)
+                            submesh.blendShapeList.append(shape)
+                        shape.deltas[lo - info.vertexStartIndex:hi - info.vertexStartIndex] += deltas[lo - entry.subMeshVertexStartIndex:hi - entry.subMeshVertexStartIndex]
+    return lods
+
+
+def _pack_re9_rows(deltas, box):
+    deltas = np.asarray(deltas, dtype=np.float32).reshape((-1, 3))
+    scale = np.array((box.max.x, box.max.y, box.max.z), dtype=np.float32)
+    normalized = np.divide(deltas, scale, out=np.zeros_like(deltas), where=scale != 0)
+    bias = np.array((1023, 511, 1023), dtype=np.float32)
+    packed = np.rint(bias + np.clip(normalized, -1.0, 1.0) * bias).astype(np.uint32)
+    return ((packed[:, 0] & 2047) | ((packed[:, 1] & 1023) << 11) | ((packed[:, 2] & 2047) << 21)).astype("<u4").tobytes()
+
+
+def _build_re9_plan(parsed, mesh_infos):
+    mode = set_export_mode(parsed, getattr(parsed, "_re9BlendShapeMode", 1), game="RE9")
+    lods = parsed.mainMeshLODList
+    authored = [i for i, lod in enumerate(lods) if any(shape.blendShapeName and not shape.blendShapeName.startswith("DUMMY_") for group in lod.visconGroupList for submesh in group.subMeshList for shape in submesh.blendShapeList)]
+    if not authored:
+        return None
+    header = mesh_format.BlendShapeHeader()
+    names = []
+    payload = bytearray()
+    for lod in lods[:max(authored) + 1]:
+        body = mesh_format.BlendShapeData()
+        body.aabbList = []
+        body.blendTargetList = []
+        body.blendS = [0, 0, 0]
+        local_names = []
+        signature_offsets = {}
+        inactive = []
+        for group in lod.visconGroupList:
+            partitions = {}
+            for submesh in group.subMeshList:
+                signature = tuple(shape.blendShapeName for shape in submesh.blendShapeList if shape.blendShapeName and not shape.blendShapeName.startswith("DUMMY_"))
+                if len(signature) != len(set(signature)):
+                    raise ValueError("Duplicate RE9 blendshape names on one submesh")
+                partitions.setdefault(signature, []).append(submesh)
+            for signature, submeshes in partitions.items():
+                target = mesh_format.BlendTarget(mesh_format.VERSION_RE9)
+                if signature and signature not in signature_offsets:
+                    signature_offsets[signature] = len(names) + len(local_names)
+                    local_names.extend(signature)
+                target.blendSSIndex = signature_offsets[signature] if signature else 0
+                target.blendShapeNum = len(signature)
+                target.unkn0 = len(body.aabbList) if signature else 0
+                target.unkn2 = int(bool(signature))
+                arrays = []
+                start_row = len(payload) // 4
+                running = 0
+                for submesh in submeshes:
+                    info = mesh_infos[submesh]
+                    entry = mesh_format.BlendSubMesh()
+                    entry.subMeshVertexStartIndex = int(info.vertexStartIndex)
+                    entry.vertOffset = start_row + running if signature else 0
+                    entry.vertCount = len(submesh.vertexPosList)
+                    if not 0 <= group.visconGroupNum <= 255 or not 0 <= submesh.materialIndex <= 255:
+                        raise ValueError("RE9 blendshape group/material ID exceeds 8-bit range")
+                    entry.paramUnkn3 = (int(submesh.materialIndex) << 8) | int(group.visconGroupNum)
+                    target.subMeshEntryList.append(entry)
+                    running += entry.vertCount
+                if len(target.subMeshEntryList) > 255:
+                    raise ValueError("RE9 blendshape target exceeds 255 submesh ranges")
+                target.subMeshEntryCount = len(target.subMeshEntryList)
+                if signature:
+                    for name in signature:
+                        chunks = []
+                        for submesh in submeshes:
+                            shape = next(shape for shape in submesh.blendShapeList if shape.blendShapeName == name)
+                            delta = np.asarray(shape.deltas, dtype=np.float32).reshape((-1, 3))
+                            if len(delta) != len(submesh.vertexPosList) or not np.all(np.isfinite(delta)):
+                                raise ValueError(f"Invalid RE9 blendshape rows for {name}")
+                            chunks.append(delta)
+                        arrays.append(np.concatenate(chunks))
+                    maximum = np.max(np.abs(np.concatenate(arrays)), axis=0)
+                    box = mesh_format.AABB()
+                    box.min.x, box.min.y, box.min.z = map(float, -maximum)
+                    box.max.x, box.max.y, box.max.z = map(float, maximum)
+                    box.min.w = box.max.w = 0.0
+                    body.aabbList.append(box)
+                    for array in arrays:
+                        payload.extend(_pack_re9_rows(array, box))
+                    body.blendTargetList.append(target)
+                else:
+                    inactive.append(target)
+        if len(names) + len(local_names) > 65535 or len(body.blendTargetList) > 65535:
+            raise ValueError("RE9 blendshape channel or target count exceeds 16-bit range")
+        body.targetCount = len(body.blendTargetList)
+        body.typing = len(inactive)
+        body.blendTargetList.extend(inactive)
+        body.unknFlag = (len(local_names) << 16) | len(names)
+        body.blendSSList = list(range(len(local_names)))
+        names.extend(local_names)
+        header.blendShapeList.append(body)
+    header.count = len(header.blendShapeList)
+    return dict(header=header, shapeRemapNames=names, payload=bytes(payload), mode=mode)
+
+
+def reserve_re9_metadata(raw, plan, offset):
+    offset = mesh_format.getPaddedPos(offset, 16)
+    raw._re9NormalMarkerOffset = offset
+    set_export_mode(raw, plan["mode"], game="RE9")
+    raw.fileHeader.normalRecalcOffset = offset
+    raw.fileHeader.blendShapesOffset = offset + 16
+    raw.blendShapeHeader = plan["header"]
+    raw._re9BlendShapePlan = plan
+    return relocate_blend_shape_header(raw.blendShapeHeader, offset + 16, mesh_format.VERSION_RE9)
+
+
+def _finalize_re9_export(parsed, raw):
+    bank = raw.meshBufferHeader
+    plan = raw._re9BlendShapePlan
+    geometry = bytearray(bank.vertexBuffer)
+    faces = bytearray(bank.faceBuffer)
+    normal_plan = _normal_contract(parsed)
+    position_element = next(entry for entry in bank.vertexElementList if entry.typing == 0)
+    normal_element = next(entry for entry in bank.vertexElementList if entry.typing == 1)
+    source_rows = [-1] * normal_plan["vertexCount"]
+    reliable = [False] * len(source_rows)
+    row = 0
+    for lod in parsed.mainMeshLODList:
+        for group in lod.visconGroupList:
+            for submesh in group.subMeshList:
+                if submesh.isReusedMesh:
+                    continue
+                count = len(submesh.vertexPosList)
+                indices = getattr(submesh, "blendShapeSourceVertexIndexList", [])
+                if len(indices) == count:
+                    source_rows[row:row + count] = list(indices)
+                    reliable[row:row + count] = [bool(getattr(submesh, "blendShapeSplitLoopVertices", False))] * count
+                row += count
+    if row != len(source_rows):
+        raise ValueError("RE9 normal-contract vertex count differs from exported geometry")
+    canonical_range = _global_resource_range(raw)
+    canonical_lods = raw.lodHeader.lodGroupList[:len(raw.blendShapeHeader.blendShapeList)]
+    canonical_range["lod"].meshGroupList = [group for lod in canonical_lods for group in lod.meshGroupList]
+    canonical_range["vertexCount"] = sum(len(submesh.vertexPosList) for lod in parsed.mainMeshLODList[:len(canonical_lods)]
+                                         for group in lod.visconGroupList for submesh in group.subMeshList if not submesh.isReusedMesh)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        try:
+            table_faces, table_vertices = _canonical_tables(raw, 0, faces, geometry, bank.vertexElementList,
+                                                            canonical_range, source_rows, reliable)
+        except RuntimeWarning as error:
+            raise ValueError("RE9 normal-table window exceeds its lane limit; split or reduce the affected submesh") from error
+    visual_end = mesh_format.getPaddedPos(len(geometry), 16)
+    geometry.extend(bytes(visual_end - len(geometry)))
+    geometry.extend(table_faces)
+    vertex_table_end = len(geometry) + len(table_vertices)
+    geometry.extend(table_vertices)
+    geometry.extend(plan["payload"])
+    geometry.extend(bytes(mesh_format.getPaddingAmount(len(geometry), 16)))
+    for index, value in enumerate(normal_plan["groupLane"]):
+        geometry[normal_element.posStartOffset + index * normal_element.stride + 3] = value
+    pivots = bytearray()
+    for index in normal_plan["pivotIndices"]:
+        start = position_element.posStartOffset + int(index) * position_element.stride
+        pivots.extend(geometry[start:start + 12])
+    bank.vertexBuffer = geometry
+    bank.faceBuffer = faces
+    bank.vertexBufferSize = len(geometry)
+    bank.faceBufferSize = len(faces)
+    bank.block2FaceBufferOffset = len(geometry) + len(faces)
+    bank.NULL = bank.block2FaceBufferOffset
+    bank.totalBufferSize = mesh_format.getPaddedPos(bank.block2FaceBufferOffset, 16)
+    low = visual_end & 65535
+    high = visual_end >> 16
+    bank.vertexElementSize = low if low < 32768 else low - 65536
+    bank.unkn1 = high if high < 32768 else high - 65536
+    bank.sunbreakSecondUnknown = (vertex_table_end << 32) | (visual_end + len(table_faces))
+    bank.sunbreakOffset = bank.sf6unkn0 = bank.streamingVertexElementOffset = bank.sf6unkn2 = 0
+    raw.fileHeader.floatsOffset = raw.fileHeader.meshOffset + 96
+    bank.vertexElementOffset = raw.fileHeader.floatsOffset + 16
+    bank.vertexBufferOffset = mesh_format.getPaddedPos(bank.vertexElementOffset + len(bank.vertexElementList) * 8, 16)
+    bank.faceBufferOffset = bank.vertexBufferOffset + bank.vertexBufferSize
+    raw.fileHeader.verticesOffset = bank.vertexBufferOffset
+    raw.fileHeader.streamingInfoOffset = raw.fileHeader.meshOffset + 80
+    raw._re9PivotOffset = bank.vertexBufferOffset + bank.totalBufferSize
+    raw._re9PivotBytes = bytes(pivots)
+    raw.fileHeader.fileSize = raw._re9PivotOffset + len(pivots)
+    raw.fileHeader.contentFlag.bitFlag |= 0x800C
+    raw.fileHeader.contentFlag.parseBitFlag()
+    raw._blendShapeWriter = "RE9"
+
+
+def _write_mesh_buffer(bank, file, version):
+    raw = bank._re9Owner
+    file.write(struct.pack("<QQQIIHHQQIIhhQQQQ", bank.vertexElementOffset, bank.vertexBufferOffset, bank.sunbreakOffset,
+                           bank.totalBufferSize, bank.vertexBufferSize, bank.mainVertexElementCount, bank.vertexElementCount,
+                           bank.prag_unknOffset0, bank.prag_unknOffset1, bank.block2FaceBufferOffset, bank.NULL,
+                           bank.vertexElementSize, bank.unkn1, bank.sunbreakSecondUnknown, bank.sf6unkn0,
+                           bank.streamingVertexElementOffset, bank.sf6unkn2))
+    file.seek(raw.fileHeader.floatsOffset)
+    file.write(struct.pack("<QQ", len(raw._re9PivotBytes), raw._re9PivotOffset))
+    file.seek(bank.vertexElementOffset)
+    for element in bank.vertexElementList:
+        element.write(file)
+    file.seek(bank.vertexBufferOffset)
+    file.write(bank.vertexBuffer)
+    file.seek(bank.faceBufferOffset)
+    file.write(bank.faceBuffer)
+    file.seek(raw._re9PivotOffset)
+    file.write(raw._re9PivotBytes)
+
+
+def _write_re9_mesh(raw, path):
+    if raw.fileHeader.version != RE9_INTERNAL_VERSION:
+        raise ValueError("RE9 blendshape writer received another game version")
+    bank = raw.meshBufferHeader
+    bank._re9Owner = raw
+    bank.write = MethodType(_write_mesh_buffer, bank)
+    try:
+        buffer = io.BytesIO()
+        raw.write(buffer, mesh_format.VERSION_RE9)
+        data = buffer.getvalue()
+    finally:
+        del bank.write
+        del bank._re9Owner
+    if len(data) != raw.fileHeader.fileSize:
+        raise ValueError("RE9 unified blendshape file size does not match EOF")
+    if struct.unpack_from("<I", data, 8)[0] != len(data):
+        raise ValueError("RE9 serialized file size does not match EOF")
+    if struct.unpack_from("<4I", data, raw.fileHeader.normalRecalcOffset) != (raw._re9BlendShapeMode, 0, 0, 0):
+        raise ValueError("RE9 normal recalculation marker is invalid")
+    if raw.fileHeader.blendShapesOffset != raw.fileHeader.normalRecalcOffset + 16:
+        raise ValueError("RE9 normal marker is not adjacent to the blendshape header")
+    if raw.streamingInfoHeader is not None and raw.streamingInfoHeader.entryCount:
+        raise ValueError("RE9 blendshape export must be unified")
+    with open(path, "wb") as output:
+        output.write(data)
+
+
+def build_re9_blender_shapes(obj, source_indices, transform, evaluated_basis, enabled):
+    if not enabled or obj.data.shape_keys is None:
+        return []
+    import bpy
+    from .re_mesh_parse import BlendShape
+
+    keys = obj.data.shape_keys
+    if not keys.use_relative:
+        raise ValueError("RE9 blendshape export requires relative Blender shape keys")
+    basis = keys.reference_key
+    exported = [key for key in keys.key_blocks if key != basis and not key.name.startswith("DUMMY_")]
+    if not exported:
+        return []
+    attribute = evaluated_basis.attributes.get(RE9_SOURCE_VERTEX_ATTRIBUTE)
+    if attribute is None or len(attribute.data) != len(evaluated_basis.vertices):
+        raise ValueError("RE9 evaluated mesh lost its export vertex provenance")
+    mapping = np.empty(len(attribute.data), dtype=np.int32)
+    attribute.data.foreach_get("value", mapping)
+    mapping = mapping[np.asarray(source_indices, dtype=np.int64)]
+    stored = [(key, key.value, key.mute) for key in keys.key_blocks]
+    show_only = obj.show_only_shape_key
+    result = []
+    baseline = None
+    shape_mesh = None
+    try:
+        obj.show_only_shape_key = False
+        for key in keys.key_blocks:
+            if key != basis:
+                key.value = 0.0
+                key.mute = False
+        obj.data.update()
+        bpy.context.view_layer.update()
+        baseline = bpy.data.meshes.new_from_object(obj.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+        if np.any(mapping < 0) or np.any(mapping >= len(baseline.vertices)):
+            raise ValueError("RE9 export vertex provenance references a missing evaluated vertex")
+        coordinates = np.empty(len(baseline.vertices) * 3, dtype=np.float32)
+        baseline.vertices.foreach_get("co", coordinates)
+        coordinates = coordinates.reshape((-1, 3))
+        topology = tuple(tuple(face.vertices) for face in baseline.polygons)
+        matrix = np.asarray(transform.to_3x3(), dtype=np.float32)
+        for key in exported:
+            key.value = 1.0
+            obj.data.update()
+            bpy.context.view_layer.update()
+            shape_mesh = bpy.data.meshes.new_from_object(obj.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+            if len(shape_mesh.vertices) != len(baseline.vertices) or tuple(tuple(face.vertices) for face in shape_mesh.polygons) != topology:
+                raise ValueError(f"RE9 shape key {key.name} changes evaluated topology")
+            values = np.empty(coordinates.size, dtype=np.float32)
+            shape_mesh.vertices.foreach_get("co", values)
+            delta = (values.reshape((-1, 3)) - coordinates) @ matrix.T
+            entry = BlendShape()
+            entry.blendShapeName = key.name
+            entry.deltas = delta[mapping].copy()
+            result.append(entry)
+            bpy.data.meshes.remove(shape_mesh)
+            shape_mesh = None
+            key.value = 0.0
+    finally:
+        if shape_mesh is not None:
+            bpy.data.meshes.remove(shape_mesh)
+        if baseline is not None:
+            bpy.data.meshes.remove(baseline)
+        for key, value, mute in stored:
+            key.value = value
+            key.mute = mute
+        obj.show_only_shape_key = show_only
+        obj.data.update()
+        bpy.context.view_layer.update()
+    return result
+
+def finalize_export(parsed_mesh, re_mesh, game="MHWILDS"):
+    if game == "RE9":
+        return _finalize_re9_export(parsed_mesh, re_mesh)
+    if game == "MHWILDS":
+        return _finalize_wilds_export(parsed_mesh, re_mesh)
+    raise ValueError(f"Unsupported blendshape game: {game}")
+
+
+def write_mesh(re_mesh, filepath, game="MHWILDS"):
+    if game == "RE9":
+        return _write_re9_mesh(re_mesh, filepath)
+    if game == "MHWILDS":
+        return _write_wilds_mesh(re_mesh, filepath)
+    raise ValueError(f"Unsupported blendshape game: {game}")

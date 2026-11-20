@@ -116,7 +116,7 @@ def normalize(lst):
 def normalizeVec(vec):
     return Vector(vec).normalized()
 
-BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS",))
+BLEND_SHAPE_EXPORT_GAMES = frozenset(("MHWILDS", "RE9"))
 DUMMY_SHAPEKEY_PREFIX = "DUMMY_"
 
 
@@ -171,6 +171,9 @@ def _build_blend_shape_entries_for_export(
 	exportShapeKeys=True,
 ):
 	"""Evaluate each Blender key through the same geometry path as the basis."""
+	if gameName == "RE9":
+		from .re_blendshape import build_re9_blender_shapes
+		return build_re9_blender_shapes(rawsubmesh, sourceVertexIndexList, transformMatrix, evaluatedBasisMesh, exportShapeKeys)
 	if (
 		not _game_supports_blend_shapes(gameName)
 		or evaluatedBasisMesh is None
@@ -1377,13 +1380,17 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 		and bool(options.get("exportBlendShapes", False))
 	)
 	if gameName == "MHWILDS":
-		from .mhwilds_blendshape import set_export_mode
+		from .re_blendshape import set_export_mode
 		selectedBlendShapeMode = int(options.get("blendShapeExportMode", 0))
 		set_export_mode(parsedMesh, selectedBlendShapeMode)
 		print(
 			f"Blendshape export mode: {selectedBlendShapeMode}; "
 			f"exportShapeKeys={blendShapeExportEnabled}"
 		)
+	elif gameName == "RE9":
+		from .re_blendshape import set_export_mode
+		selectedBlendShapeMode = set_export_mode(parsedMesh, options.get("blendShapeExportMode", 1), game="RE9")
+		print(f"RE9 blendshape export mode: {selectedBlendShapeMode}; exportShapeKeys={blendShapeExportEnabled}")
 	newMeshDataList = []
 	vertexGroupsSet = set()
 	weightedBonesSet = set()
@@ -1653,9 +1660,10 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 				#Get copy of sub mesh with modifiers applied
 				#Creates copy of object so that solve repeated uvs and sharp edge splitting can be done and not affect the original mesh
 				cloneObj.name ="CLN_" + obj.name
-				# Wilds blendshape export needs an undeformed Basis clone. Other games
-				# retain the original RE Mesh Editor evaluated-clone behavior exactly.
 				if _game_supports_blend_shapes(gameName):
+					if gameName == "RE9":
+						storedShowOnlyShapeKey = obj.show_only_shape_key
+						obj.show_only_shape_key = False
 					storedShapeValues = _temporarily_zero_shape_key_values(obj)
 					try:
 						obj.data.update()
@@ -1665,6 +1673,8 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						)
 					finally:
 						_restore_shape_key_values(storedShapeValues)
+						if gameName == "RE9":
+							obj.show_only_shape_key = storedShowOnlyShapeKey
 						obj.data.update()
 						bpy.context.view_layer.update()
 				else:
@@ -1672,6 +1682,13 @@ Use the "Limit Total and Normalize All Weights" button the RE Mesh tab.
 						obj.evaluated_get(dg)
 					)
 				clonedMeshCollection = getCollection("clonedMeshes")
+				if gameName == "RE9":
+					from .re_blendshape import RE9_SOURCE_VERTEX_ATTRIBUTE
+					attribute = cloneObj.data.attributes.get(RE9_SOURCE_VERTEX_ATTRIBUTE)
+					if attribute is not None:
+						cloneObj.data.attributes.remove(attribute)
+					attribute = cloneObj.data.attributes.new(RE9_SOURCE_VERTEX_ATTRIBUTE, "INT", "POINT")
+					attribute.data.foreach_set("value", np.arange(len(cloneObj.data.vertices), dtype=np.int32))
 				clonedMeshCollection.objects.link(cloneObj)
 				
 				print(f"Created temporary clone of {obj.name}: {cloneObj.name}")
